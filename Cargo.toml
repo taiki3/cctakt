@@ -1,0 +1,11 @@
+[package]
+name = "cctakt"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+portable-pty = "0.9"
+anyhow = "1"
+crossterm = "0.28"
+ratatui = "0.29"
+vt100 = "0.15"
