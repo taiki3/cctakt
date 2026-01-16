@@ -1,3 +1,6 @@
+mod agent;
+
+use agent::{AgentManager, AgentStatus};
 use anyhow::{Context, Result};
 use crossterm::{
     cursor::Hide,
@@ -5,7 +8,6 @@ use crossterm::{
     execute,
     terminal::{self, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -14,84 +16,69 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame, Terminal,
 };
-use std::io::{self, Read, Write};
-use std::sync::{Arc, Mutex};
+use std::env;
+use std::io;
 use std::time::Duration;
 
-/// アプリケーションの状態
+/// Application state
 struct App {
-    /// 仮想ターミナル（PTY出力をパース）
-    parser: Arc<Mutex<vt100::Parser>>,
-    /// PTYへの書き込み用
-    pty_writer: Option<Box<dyn Write + Send>>,
-    /// PTYマスター（リサイズ用）
-    pty_master: Option<Box<dyn portable_pty::MasterPty + Send>>,
-    /// 終了フラグ
+    agent_manager: AgentManager,
     should_quit: bool,
-    /// セッション終了フラグ
-    session_ended: bool,
+    content_rows: u16,
+    content_cols: u16,
 }
 
 impl App {
     fn new(rows: u16, cols: u16) -> Self {
         Self {
-            parser: Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000))),
-            pty_writer: None,
-            pty_master: None,
+            agent_manager: AgentManager::new(),
             should_quit: false,
-            session_ended: false,
+            content_rows: rows,
+            content_cols: cols,
         }
     }
 
-    /// PTYにバイト列を送信
-    fn send_bytes(&mut self, bytes: &[u8]) {
-        if let Some(ref mut writer) = self.pty_writer {
-            let _ = writer.write_all(bytes);
-            let _ = writer.flush();
-        }
+    /// Add a new agent with the current directory
+    fn add_agent(&mut self) -> Result<()> {
+        let working_dir = env::current_dir().context("Failed to get current directory")?;
+        let name = working_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unnamed")
+            .to_string();
+
+        let agent_count = self.agent_manager.list().len();
+        let display_name = if agent_count == 0 {
+            name
+        } else {
+            format!("{}-{}", name, agent_count + 1)
+        };
+
+        self.agent_manager.add(display_name, working_dir, self.content_rows, self.content_cols)?;
+        Ok(())
     }
 
-    /// PTYサイズを更新
-    fn resize_pty(&mut self, cols: u16, rows: u16) {
-        // vt100パーサーをリサイズ
-        {
-            let mut parser = self.parser.lock().unwrap();
-            parser.set_size(rows, cols);
-        }
-        // PTYをリサイズ
-        if let Some(ref master) = self.pty_master {
-            let _ = master.resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            });
-        }
+    /// Close the active agent
+    fn close_active_agent(&mut self) {
+        let index = self.agent_manager.active_index();
+        self.agent_manager.close(index);
+    }
+
+    /// Resize all agents
+    fn resize(&mut self, cols: u16, rows: u16) {
+        self.content_cols = cols;
+        self.content_rows = rows;
+        self.agent_manager.resize_all(cols, rows);
     }
 }
 
 fn main() -> Result<()> {
-    loop {
-        let action = run_claude_session()?;
-        match action {
-            SessionAction::Restart => continue,
-            SessionAction::Quit => break,
-        }
-    }
-    Ok(())
-}
-
-enum SessionAction {
-    Restart,
-    Quit,
-}
-
-fn run_claude_session() -> Result<SessionAction> {
-    // ターミナルサイズを取得
+    // Get terminal size
     let (cols, rows) = terminal::size().context("Failed to get terminal size")?;
-    let content_rows = rows.saturating_sub(3); // ヘッダー1行 + ボーダー2行
+    let content_rows = rows.saturating_sub(3); // Header 1 line + border 2 lines
+    let content_cols = cols.saturating_sub(2); // Border 2 columns
 
-    // ターミナルのセットアップ
+    // Setup terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, Hide)?;
@@ -100,125 +87,97 @@ fn run_claude_session() -> Result<SessionAction> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // アプリケーション初期化
-    let mut app = App::new(content_rows, cols.saturating_sub(2)); // ボーダー分引く
+    // Initialize app
+    let mut app = App::new(content_rows, content_cols);
 
-    // PTYのセットアップ
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: content_rows,
-            cols: cols.saturating_sub(2),
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .context("Failed to open pty")?;
+    // Add initial agent
+    if let Err(e) = app.add_agent() {
+        // Cleanup and return error
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            crossterm::cursor::Show,
+            LeaveAlternateScreen
+        )?;
+        return Err(e);
+    }
 
-    // Claude Code を起動
-    let cmd = CommandBuilder::new("claude");
-    let mut child = pair.slave.spawn_command(cmd).context("Failed to spawn claude")?;
-    drop(pair.slave);
-
-    // PTYの読み書き設定
-    let reader = pair.master.try_clone_reader().context("Failed to clone reader")?;
-    app.pty_writer = Some(pair.master.take_writer().context("Failed to take writer")?);
-    app.pty_master = Some(pair.master);
-
-    // PTY出力読み取りスレッド -> vt100にフィード
-    let parser = Arc::clone(&app.parser);
-    let output_handle = std::thread::spawn(move || {
-        let mut reader = reader;
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let mut parser = parser.lock().unwrap();
-                    parser.process(&buf[..n]);
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    // メインループ
-    let mut user_quit = false;
+    // Main loop
     loop {
-        // 描画
+        // Draw
         terminal.draw(|f| ui(f, &app))?;
 
-        // イベントをポーリング（16msごと ≈ 60fps）
+        // Poll events (16ms ≈ 60fps)
         if event::poll(Duration::from_millis(16))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if app.session_ended {
-                        // セッション終了後のメニュー
+                    if app.agent_manager.is_empty() {
+                        // No agents - show menu
                         match key.code {
-                            KeyCode::Char('r') | KeyCode::Char('R') => {
-                                break; // restart
+                            KeyCode::Char('n') | KeyCode::Char('N') => {
+                                let _ = app.add_agent();
                             }
                             KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
-                                user_quit = true;
-                                break;
+                                app.should_quit = true;
                             }
                             _ => {}
                         }
                     } else {
-                        // 通常のキー入力処理
-                        match (key.modifiers, key.code) {
-                            (KeyModifiers::CONTROL, KeyCode::Char('q')) => {
-                                user_quit = true;
-                                break;
+                        // Handle keybindings
+                        let handled = handle_keybinding(&mut app, key.modifiers, key.code);
+
+                        if !handled {
+                            // Forward to active agent's PTY
+                            if let Some(agent) = app.agent_manager.active_mut() {
+                                if agent.status == AgentStatus::Running {
+                                    match (key.modifiers, key.code) {
+                                        (KeyModifiers::CONTROL, KeyCode::Char(c)) => {
+                                            let ctrl_char = (c as u8) & 0x1f;
+                                            agent.send_bytes(&[ctrl_char]);
+                                        }
+                                        (_, KeyCode::Enter) => agent.send_bytes(b"\r"),
+                                        (_, KeyCode::Backspace) => agent.send_bytes(&[0x7f]),
+                                        (_, KeyCode::Tab) => agent.send_bytes(b"\t"),
+                                        (_, KeyCode::Esc) => agent.send_bytes(&[0x1b]),
+                                        (_, KeyCode::Up) => agent.send_bytes(b"\x1b[A"),
+                                        (_, KeyCode::Down) => agent.send_bytes(b"\x1b[B"),
+                                        (_, KeyCode::Right) => agent.send_bytes(b"\x1b[C"),
+                                        (_, KeyCode::Left) => agent.send_bytes(b"\x1b[D"),
+                                        (_, KeyCode::Home) => agent.send_bytes(b"\x1b[H"),
+                                        (_, KeyCode::End) => agent.send_bytes(b"\x1b[F"),
+                                        (_, KeyCode::PageUp) => agent.send_bytes(b"\x1b[5~"),
+                                        (_, KeyCode::PageDown) => agent.send_bytes(b"\x1b[6~"),
+                                        (_, KeyCode::Delete) => agent.send_bytes(b"\x1b[3~"),
+                                        (_, KeyCode::Char(c)) => {
+                                            let mut buf = [0u8; 4];
+                                            let s = c.encode_utf8(&mut buf);
+                                            agent.send_bytes(s.as_bytes());
+                                        }
+                                        _ => {}
+                                    }
+                                }
                             }
-                            (KeyModifiers::CONTROL, KeyCode::Char(c)) => {
-                                let ctrl_char = (c as u8) & 0x1f;
-                                app.send_bytes(&[ctrl_char]);
-                            }
-                            (_, KeyCode::Enter) => app.send_bytes(b"\r"),
-                            (_, KeyCode::Backspace) => app.send_bytes(&[0x7f]),
-                            (_, KeyCode::Tab) => app.send_bytes(b"\t"),
-                            (_, KeyCode::Esc) => app.send_bytes(&[0x1b]),
-                            (_, KeyCode::Up) => app.send_bytes(b"\x1b[A"),
-                            (_, KeyCode::Down) => app.send_bytes(b"\x1b[B"),
-                            (_, KeyCode::Right) => app.send_bytes(b"\x1b[C"),
-                            (_, KeyCode::Left) => app.send_bytes(b"\x1b[D"),
-                            (_, KeyCode::Home) => app.send_bytes(b"\x1b[H"),
-                            (_, KeyCode::End) => app.send_bytes(b"\x1b[F"),
-                            (_, KeyCode::PageUp) => app.send_bytes(b"\x1b[5~"),
-                            (_, KeyCode::PageDown) => app.send_bytes(b"\x1b[6~"),
-                            (_, KeyCode::Delete) => app.send_bytes(b"\x1b[3~"),
-                            (_, KeyCode::Char(c)) => {
-                                let mut buf = [0u8; 4];
-                                let s = c.encode_utf8(&mut buf);
-                                app.send_bytes(s.as_bytes());
-                            }
-                            _ => {}
                         }
                     }
                 }
                 Event::Resize(new_cols, new_rows) => {
                     let content_rows = new_rows.saturating_sub(3);
-                    app.resize_pty(new_cols.saturating_sub(2), content_rows);
+                    let content_cols = new_cols.saturating_sub(2);
+                    app.resize(content_cols, content_rows);
                 }
                 _ => {}
             }
         }
 
-        // 子プロセスが終了したかチェック
-        if !app.session_ended {
-            if let Ok(Some(_)) = child.try_wait() {
-                app.session_ended = true;
-            }
-        }
+        // Check all agents' status
+        app.agent_manager.check_all_status();
 
         if app.should_quit {
             break;
         }
     }
 
-    let _ = output_handle.join();
-
-    // クリーンアップ
+    // Cleanup
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -226,10 +185,51 @@ fn run_claude_session() -> Result<SessionAction> {
         LeaveAlternateScreen
     )?;
 
-    if user_quit {
-        Ok(SessionAction::Quit)
-    } else {
-        Ok(SessionAction::Restart)
+    Ok(())
+}
+
+/// Handle special keybindings, returns true if handled
+fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> bool {
+    match (modifiers, code) {
+        // Ctrl+Q: Quit
+        (KeyModifiers::CONTROL, KeyCode::Char('q')) => {
+            app.should_quit = true;
+            true
+        }
+        // Ctrl+T: New agent
+        (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
+            let _ = app.add_agent();
+            true
+        }
+        // Ctrl+W: Close active agent
+        (KeyModifiers::CONTROL, KeyCode::Char('w')) => {
+            app.close_active_agent();
+            true
+        }
+        // Ctrl+Tab or plain Tab (when no agent focused): Next tab
+        // Note: Ctrl+Tab may not work in all terminals, so we use Ctrl+N as alternative
+        (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
+            app.agent_manager.next();
+            true
+        }
+        // Ctrl+P: Previous tab
+        (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
+            app.agent_manager.prev();
+            true
+        }
+        // Ctrl+1-9: Switch to tab by number
+        (KeyModifiers::CONTROL, KeyCode::Char(c)) if ('1'..='9').contains(&c) => {
+            let index = (c as usize) - ('1' as usize);
+            app.agent_manager.switch_to(index);
+            true
+        }
+        // Alt+1-9: Also switch to tab by number (more compatible)
+        (KeyModifiers::ALT, KeyCode::Char(c)) if ('1'..='9').contains(&c) => {
+            let index = (c as usize) - ('1' as usize);
+            app.agent_manager.switch_to(index);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -237,13 +237,29 @@ fn ui(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // ヘッダー
-            Constraint::Min(1),    // メインエリア
+            Constraint::Length(1), // Header with tabs
+            Constraint::Min(1),    // Main area
         ])
         .split(f.area());
 
-    // ヘッダー
-    let header = Paragraph::new(Line::from(vec![
+    // Header with tabs
+    render_header(f, app, chunks[0]);
+
+    // Main area
+    if app.agent_manager.is_empty() {
+        render_no_agent_menu(f, chunks[1]);
+    } else if let Some(agent) = app.agent_manager.active() {
+        if agent.status == AgentStatus::Ended {
+            render_ended_agent(f, agent, chunks[1]);
+        } else {
+            render_agent_screen(f, agent, chunks[1]);
+        }
+    }
+}
+
+/// Render header with tabs
+fn render_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let mut spans: Vec<Span> = vec![
         Span::styled(
             " cctakt ",
             Style::default()
@@ -251,106 +267,162 @@ fn ui(f: &mut Frame, app: &App) {
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            " Claude Code Orchestrator ",
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled("[Ctrl+Q: quit]", Style::default().fg(Color::DarkGray)),
-    ]));
-    f.render_widget(header, chunks[0]);
+    ];
 
-    // メインエリア
-    if app.session_ended {
-        // セッション終了メニュー
-        let menu = Paragraph::new(vec![
-            Line::from(""),
-            Line::from("  Claude Code session ended."),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("  [R]", Style::default().fg(Color::Green)),
-                Span::raw(" Restart Claude Code"),
-            ]),
-            Line::from(vec![
-                Span::styled("  [Q]", Style::default().fg(Color::Red)),
-                Span::raw(" Quit cctakt"),
-            ]),
-            Line::from(""),
-            Line::from(Span::styled(
-                "  Press R or Q...",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        );
-        f.render_widget(menu, chunks[1]);
-    } else {
-        // vt100画面を描画
-        let parser = app.parser.lock().unwrap();
-        let screen = parser.screen();
+    let agents = app.agent_manager.list();
+    let active_index = app.agent_manager.active_index();
 
-        let content_height = chunks[1].height.saturating_sub(2) as usize;
-        let content_width = chunks[1].width.saturating_sub(2) as usize;
+    for (i, agent) in agents.iter().enumerate() {
+        let is_active = i == active_index;
+        let is_ended = agent.status == AgentStatus::Ended;
 
-        let mut lines: Vec<Line> = Vec::new();
+        let tab_content = format!(" [{}:{}] ", i + 1, agent.name);
 
-        for row in 0..content_height {
-            let mut spans: Vec<Span> = Vec::new();
-            let mut current_text = String::new();
-            let mut current_style = Style::default();
+        let style = if is_active {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else if is_ended {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
 
-            for col in 0..content_width {
-                let cell = screen.cell(row as u16, col as u16);
-                if let Some(cell) = cell {
-                    let cell_style = cell_to_style(cell);
-
-                    if cell_style != current_style {
-                        if !current_text.is_empty() {
-                            spans.push(Span::styled(current_text.clone(), current_style));
-                            current_text.clear();
-                        }
-                        current_style = cell_style;
-                    }
-
-                    current_text.push_str(&cell.contents());
-                }
-            }
-
-            if !current_text.is_empty() {
-                spans.push(Span::styled(current_text, current_style));
-            }
-
-            lines.push(Line::from(spans));
-        }
-
-        let terminal_widget = Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        );
-        f.render_widget(terminal_widget, chunks[1]);
+        spans.push(Span::styled(tab_content, style));
     }
+
+    // Add help text on the right
+    spans.push(Span::styled(
+        " [^T:new ^W:close ^N/^P:switch ^Q:quit]",
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let header = Paragraph::new(Line::from(spans));
+    f.render_widget(header, area);
 }
 
-/// vt100のセル属性をratatuiのStyleに変換
+/// Render menu when no agents exist
+fn render_no_agent_menu(f: &mut Frame, area: ratatui::layout::Rect) {
+    let menu = Paragraph::new(vec![
+        Line::from(""),
+        Line::from("  No active agents."),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [N]", Style::default().fg(Color::Green)),
+            Span::raw(" New agent"),
+        ]),
+        Line::from(vec![
+            Span::styled("  [Q]", Style::default().fg(Color::Red)),
+            Span::raw(" Quit cctakt"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Press N or Q...",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(menu, area);
+}
+
+/// Render ended agent menu
+fn render_ended_agent(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect) {
+    let menu = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(format!("  Agent '{}' session ended.", agent.name)),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [Ctrl+T]", Style::default().fg(Color::Green)),
+            Span::raw(" New agent"),
+        ]),
+        Line::from(vec![
+            Span::styled("  [Ctrl+W]", Style::default().fg(Color::Yellow)),
+            Span::raw(" Close this tab"),
+        ]),
+        Line::from(vec![
+            Span::styled("  [Ctrl+N/P]", Style::default().fg(Color::Blue)),
+            Span::raw(" Switch to another tab"),
+        ]),
+        Line::from(""),
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {} (ended) ", agent.name))
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(menu, area);
+}
+
+/// Render active agent's vt100 screen
+fn render_agent_screen(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect) {
+    let parser = agent.parser.lock().unwrap();
+    let screen = parser.screen();
+
+    let content_height = area.height.saturating_sub(2) as usize;
+    let content_width = area.width.saturating_sub(2) as usize;
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    for row in 0..content_height {
+        let mut spans: Vec<Span> = Vec::new();
+        let mut current_text = String::new();
+        let mut current_style = Style::default();
+
+        for col in 0..content_width {
+            let cell = screen.cell(row as u16, col as u16);
+            if let Some(cell) = cell {
+                let cell_style = cell_to_style(cell);
+
+                if cell_style != current_style {
+                    if !current_text.is_empty() {
+                        spans.push(Span::styled(current_text.clone(), current_style));
+                        current_text.clear();
+                    }
+                    current_style = cell_style;
+                }
+
+                current_text.push_str(&cell.contents());
+            }
+        }
+
+        if !current_text.is_empty() {
+            spans.push(Span::styled(current_text, current_style));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    let terminal_widget = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(terminal_widget, area);
+}
+
+/// Convert vt100 cell attributes to ratatui Style
 fn cell_to_style(cell: &vt100::Cell) -> Style {
     let mut style = Style::default();
 
-    // 前景色
+    // Foreground color
     let fg = cell.fgcolor();
     if !matches!(fg, vt100::Color::Default) {
         style = style.fg(vt100_color_to_ratatui(fg));
     }
 
-    // 背景色
+    // Background color
     let bg = cell.bgcolor();
     if !matches!(bg, vt100::Color::Default) {
         style = style.bg(vt100_color_to_ratatui(bg));
     }
 
-    // 属性
+    // Attributes
     if cell.bold() {
         style = style.add_modifier(Modifier::BOLD);
     }
@@ -367,7 +439,7 @@ fn cell_to_style(cell: &vt100::Cell) -> Style {
     style
 }
 
-/// vt100の色をratatuiの色に変換
+/// Convert vt100 color to ratatui color
 fn vt100_color_to_ratatui(color: vt100::Color) -> Color {
     match color {
         vt100::Color::Default => Color::Reset,
