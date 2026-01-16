@@ -167,7 +167,7 @@ impl DiffView {
         // Build the block
         let title = self.title.clone().unwrap_or_else(|| "Diff".to_string());
         let block = Block::default()
-            .title(format!(" {} ", title))
+            .title(format!(" {title} "))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan));
 

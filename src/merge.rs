@@ -248,7 +248,7 @@ fn parse_diff_stat(stat: &str) -> (usize, usize, usize) {
             // Parse insertions
             if let Some(pos) = line.find("insertion") {
                 let before = &line[..pos];
-                if let Some(num_str) = before.split(',').last() {
+                if let Some(num_str) = before.split(',').next_back() {
                     let num_str = num_str.trim();
                     insertions = num_str.parse().unwrap_or(0);
                 }
@@ -257,7 +257,7 @@ fn parse_diff_stat(stat: &str) -> (usize, usize, usize) {
             // Parse deletions
             if let Some(pos) = line.find("deletion") {
                 let before = &line[..pos];
-                if let Some(num_str) = before.split(',').last() {
+                if let Some(num_str) = before.split(',').next_back() {
                     let num_str = num_str.trim();
                     deletions = num_str.parse().unwrap_or(0);
                 }
