@@ -25,6 +25,10 @@ pub struct Config {
     #[serde(default)]
     pub github: GitHubConfig,
 
+    /// Anthropic API configuration
+    #[serde(default)]
+    pub anthropic: AnthropicConfig,
+
     /// Keybinding configuration
     #[serde(default)]
     pub keybindings: KeyBindings,
@@ -36,6 +40,7 @@ impl Default for Config {
             worktree_dir: default_worktree_dir(),
             branch_prefix: default_branch_prefix(),
             github: GitHubConfig::default(),
+            anthropic: AnthropicConfig::default(),
             keybindings: KeyBindings::default(),
         }
     }
@@ -55,6 +60,49 @@ pub struct GitHubConfig {
     /// Labels to filter issues (e.g., "cctakt", "good first issue")
     #[serde(default)]
     pub labels: Vec<String>,
+}
+
+/// Anthropic API configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicConfig {
+    /// API key (can also be set via ANTHROPIC_API_KEY env var)
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Model to use (default: claude-sonnet-4-20250514)
+    #[serde(default = "default_anthropic_model")]
+    pub model: String,
+
+    /// Max tokens for response (default: 1024)
+    #[serde(default = "default_anthropic_max_tokens")]
+    pub max_tokens: u32,
+
+    /// Whether to auto-generate PR descriptions
+    #[serde(default = "default_auto_generate_pr")]
+    pub auto_generate_pr_description: bool,
+}
+
+fn default_anthropic_model() -> String {
+    "claude-sonnet-4-20250514".to_string()
+}
+
+fn default_anthropic_max_tokens() -> u32 {
+    1024
+}
+
+fn default_auto_generate_pr() -> bool {
+    true
+}
+
+impl Default for AnthropicConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            model: default_anthropic_model(),
+            max_tokens: default_anthropic_max_tokens(),
+            auto_generate_pr_description: default_auto_generate_pr(),
+        }
+    }
 }
 
 /// Keybinding configuration
@@ -190,6 +238,11 @@ mod tests {
         assert!(config.github.labels.is_empty());
         assert_eq!(config.keybindings.new_agent, "ctrl+t");
         assert_eq!(config.keybindings.quit, "ctrl+q");
+        // Anthropic defaults
+        assert!(config.anthropic.api_key.is_none());
+        assert_eq!(config.anthropic.model, "claude-sonnet-4-20250514");
+        assert_eq!(config.anthropic.max_tokens, 1024);
+        assert!(config.anthropic.auto_generate_pr_description);
     }
 
     #[test]
@@ -272,5 +325,38 @@ branch_prefix = "partial"
         // Default values
         assert_eq!(config.worktree_dir, PathBuf::from(".worktrees"));
         assert_eq!(config.keybindings.new_agent, "ctrl+t");
+    }
+
+    #[test]
+    fn test_anthropic_config() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(
+            temp_file,
+            r#"
+[anthropic]
+api_key = "sk-ant-test-key"
+model = "claude-3-opus"
+max_tokens = 2048
+auto_generate_pr_description = false
+"#
+        )
+        .unwrap();
+
+        let config = Config::load_from(temp_file.path()).unwrap();
+
+        assert_eq!(config.anthropic.api_key, Some("sk-ant-test-key".to_string()));
+        assert_eq!(config.anthropic.model, "claude-3-opus");
+        assert_eq!(config.anthropic.max_tokens, 2048);
+        assert!(!config.anthropic.auto_generate_pr_description);
+    }
+
+    #[test]
+    fn test_anthropic_config_default() {
+        let config = AnthropicConfig::default();
+
+        assert!(config.api_key.is_none());
+        assert_eq!(config.model, "claude-sonnet-4-20250514");
+        assert_eq!(config.max_tokens, 1024);
+        assert!(config.auto_generate_pr_description);
     }
 }
