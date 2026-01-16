@@ -4,7 +4,8 @@ use agent::{AgentManager, AgentStatus};
 use anyhow::{Context, Result};
 use cctakt::{
     issue_picker::centered_rect, suggest_branch_name, Config, DiffView, GitHubClient, Issue,
-    IssuePicker, IssuePickerResult, MergeManager, WorktreeManager,
+    IssuePicker, IssuePickerResult, MergeManager, Plan, PlanManager, TaskAction, TaskStatus,
+    WorktreeManager,
 };
 use crossterm::{
     cursor::Hide,
@@ -58,6 +59,13 @@ struct ReviewState {
     conflicts: Vec<String>,
 }
 
+/// Notification message
+struct Notification {
+    message: String,
+    level: cctakt::plan::NotifyLevel,
+    created_at: std::time::Instant,
+}
+
 /// Application state
 struct App {
     agent_manager: AgentManager,
@@ -80,6 +88,14 @@ struct App {
     agent_worktrees: Vec<Option<PathBuf>>,
     /// Review state for merge review mode
     review_state: Option<ReviewState>,
+    /// Plan manager for orchestrator communication
+    plan_manager: PlanManager,
+    /// Current plan being executed
+    current_plan: Option<Plan>,
+    /// Task ID to agent index mapping
+    task_agents: std::collections::HashMap<String, usize>,
+    /// Notifications to display
+    notifications: Vec<Notification>,
 }
 
 impl App {
@@ -107,6 +123,10 @@ impl App {
             agent_issues: Vec::new(),
             agent_worktrees: Vec::new(),
             review_state: None,
+            plan_manager: PlanManager::current_dir(),
+            current_plan: None,
+            task_agents: std::collections::HashMap::new(),
+            notifications: Vec::new(),
         }
     }
 
@@ -304,6 +324,320 @@ impl App {
     fn cancel_review(&mut self) {
         self.review_state = None;
         self.mode = AppMode::Normal;
+    }
+
+    /// Check for plan file changes and load
+    fn check_plan(&mut self) {
+        if self.plan_manager.has_changes() {
+            match self.plan_manager.load() {
+                Ok(Some(plan)) => {
+                    if let Some(desc) = &plan.description {
+                        self.add_notification(
+                            format!("Plan loaded: {}", desc),
+                            cctakt::plan::NotifyLevel::Info,
+                        );
+                    }
+                    self.current_plan = Some(plan);
+                }
+                Ok(None) => {
+                    self.current_plan = None;
+                }
+                Err(e) => {
+                    self.add_notification(
+                        format!("Failed to load plan: {}", e),
+                        cctakt::plan::NotifyLevel::Error,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Process pending tasks in the current plan
+    fn process_plan(&mut self) {
+        // Get next pending task (clone to avoid borrow issues)
+        let next_task = self
+            .current_plan
+            .as_ref()
+            .and_then(|p| p.next_pending())
+            .cloned();
+
+        if let Some(task) = next_task {
+            self.execute_task(&task.id.clone());
+        }
+
+        // Save plan if we have changes
+        if let Some(ref plan) = self.current_plan {
+            let _ = self.plan_manager.save(plan);
+        }
+    }
+
+    /// Execute a task by ID
+    fn execute_task(&mut self, task_id: &str) {
+        // Mark task as running
+        if let Some(ref mut plan) = self.current_plan {
+            plan.update_status(task_id, TaskStatus::Running);
+        }
+
+        // Get task action (clone to avoid borrow issues)
+        let task_action = self
+            .current_plan
+            .as_ref()
+            .and_then(|p| p.get_task(task_id))
+            .map(|t| t.action.clone());
+
+        let Some(action) = task_action else {
+            return;
+        };
+
+        match action {
+            TaskAction::CreateWorker {
+                branch,
+                task_description,
+                base_branch,
+            } => {
+                self.execute_create_worker(task_id, &branch, &task_description, base_branch.as_deref());
+            }
+            TaskAction::CreatePr {
+                branch,
+                title,
+                body,
+                base,
+                draft,
+            } => {
+                self.execute_create_pr(task_id, &branch, &title, body.as_deref(), base.as_deref(), draft);
+            }
+            TaskAction::MergeBranch { branch, target } => {
+                self.execute_merge_branch(task_id, &branch, target.as_deref());
+            }
+            TaskAction::CleanupWorktree { worktree } => {
+                self.execute_cleanup_worktree(task_id, &worktree);
+            }
+            TaskAction::RunCommand { worktree, command } => {
+                self.execute_run_command(task_id, &worktree, &command);
+            }
+            TaskAction::Notify { message, level } => {
+                self.add_notification(message, level);
+                if let Some(ref mut plan) = self.current_plan {
+                    plan.update_status(task_id, TaskStatus::Completed);
+                }
+            }
+        }
+    }
+
+    /// Execute CreateWorker task
+    fn execute_create_worker(
+        &mut self,
+        task_id: &str,
+        branch: &str,
+        task_description: &str,
+        _base_branch: Option<&str>,
+    ) {
+        // Create worktree
+        let (working_dir, worktree_path) = if let Some(ref wt_manager) = self.worktree_manager {
+            match wt_manager.create(branch, &self.config.worktree_dir) {
+                Ok(path) => (path.clone(), Some(path)),
+                Err(e) => {
+                    self.mark_task_failed(task_id, &format!("Failed to create worktree: {}", e));
+                    return;
+                }
+            }
+        } else {
+            match env::current_dir() {
+                Ok(dir) => (dir, None),
+                Err(e) => {
+                    self.mark_task_failed(task_id, &format!("Failed to get current directory: {}", e));
+                    return;
+                }
+            }
+        };
+
+        // Create agent
+        let name = branch.to_string();
+        match self.agent_manager.add(
+            name.clone(),
+            working_dir,
+            self.content_rows,
+            self.content_cols,
+        ) {
+            Ok(_) => {
+                let agent_index = self.agent_manager.list().len() - 1;
+                self.agent_issues.push(None);
+                self.agent_worktrees.push(worktree_path);
+                self.task_agents.insert(task_id.to_string(), agent_index);
+
+                self.add_notification(
+                    format!("Worker started: {}", name),
+                    cctakt::plan::NotifyLevel::Success,
+                );
+
+                // Send task description to agent
+                if let Some(agent) = self.agent_manager.get_mut(agent_index) {
+                    // Format task as a prompt
+                    let prompt = format!("{}\n", task_description);
+                    agent.send_bytes(prompt.as_bytes());
+                }
+            }
+            Err(e) => {
+                self.mark_task_failed(task_id, &format!("Failed to create agent: {}", e));
+            }
+        }
+    }
+
+    /// Execute CreatePr task
+    fn execute_create_pr(
+        &mut self,
+        task_id: &str,
+        branch: &str,
+        title: &str,
+        body: Option<&str>,
+        base: Option<&str>,
+        draft: bool,
+    ) {
+        let Some(ref client) = self.github_client else {
+            self.mark_task_failed(task_id, "GitHub client not configured");
+            return;
+        };
+
+        let create_req = cctakt::github::CreatePullRequest {
+            title: title.to_string(),
+            body: body.map(String::from),
+            head: branch.to_string(),
+            base: base.unwrap_or("main").to_string(),
+            draft,
+        };
+
+        match client.create_pull_request(&create_req) {
+            Ok(pr) => {
+                self.add_notification(
+                    format!("PR created: #{} - {}", pr.number, pr.title),
+                    cctakt::plan::NotifyLevel::Success,
+                );
+                if let Some(ref mut plan) = self.current_plan {
+                    plan.update_status(task_id, TaskStatus::Completed);
+                }
+            }
+            Err(e) => {
+                self.mark_task_failed(task_id, &format!("Failed to create PR: {}", e));
+            }
+        }
+    }
+
+    /// Execute MergeBranch task
+    fn execute_merge_branch(&mut self, task_id: &str, branch: &str, target: Option<&str>) {
+        let repo_path = match env::current_dir() {
+            Ok(p) => p,
+            Err(e) => {
+                self.mark_task_failed(task_id, &format!("Failed to get current directory: {}", e));
+                return;
+            }
+        };
+
+        let merger = MergeManager::new(&repo_path);
+        let merger = if let Some(t) = target {
+            merger.with_main_branch(t)
+        } else {
+            merger
+        };
+
+        match merger.merge_no_ff(branch, None) {
+            Ok(()) => {
+                self.add_notification(
+                    format!("Merged: {} → {}", branch, target.unwrap_or("main")),
+                    cctakt::plan::NotifyLevel::Success,
+                );
+                if let Some(ref mut plan) = self.current_plan {
+                    plan.update_status(task_id, TaskStatus::Completed);
+                }
+            }
+            Err(e) => {
+                self.mark_task_failed(task_id, &format!("Failed to merge: {}", e));
+            }
+        }
+    }
+
+    /// Execute CleanupWorktree task
+    fn execute_cleanup_worktree(&mut self, task_id: &str, worktree: &str) {
+        if let Some(ref wt_manager) = self.worktree_manager {
+            let worktree_path = self.config.worktree_dir.join(worktree);
+            match wt_manager.remove(&worktree_path) {
+                Ok(()) => {
+                    self.add_notification(
+                        format!("Worktree cleaned up: {}", worktree),
+                        cctakt::plan::NotifyLevel::Info,
+                    );
+                    if let Some(ref mut plan) = self.current_plan {
+                        plan.update_status(task_id, TaskStatus::Completed);
+                    }
+                }
+                Err(e) => {
+                    self.mark_task_failed(task_id, &format!("Failed to cleanup worktree: {}", e));
+                }
+            }
+        } else {
+            self.mark_task_failed(task_id, "Worktree manager not available");
+        }
+    }
+
+    /// Execute RunCommand task (not implemented yet - just marks complete)
+    fn execute_run_command(&mut self, task_id: &str, worktree: &str, command: &str) {
+        self.add_notification(
+            format!("RunCommand not implemented: {} in {}", command, worktree),
+            cctakt::plan::NotifyLevel::Warning,
+        );
+        if let Some(ref mut plan) = self.current_plan {
+            plan.update_status(task_id, TaskStatus::Skipped);
+        }
+    }
+
+    /// Mark a task as failed
+    fn mark_task_failed(&mut self, task_id: &str, error: &str) {
+        self.add_notification(
+            format!("Task failed: {}", error),
+            cctakt::plan::NotifyLevel::Error,
+        );
+        if let Some(ref mut plan) = self.current_plan {
+            plan.mark_failed(task_id, error);
+        }
+    }
+
+    /// Add a notification
+    fn add_notification(&mut self, message: String, level: cctakt::plan::NotifyLevel) {
+        self.notifications.push(Notification {
+            message,
+            level,
+            created_at: std::time::Instant::now(),
+        });
+    }
+
+    /// Clean up old notifications (older than 5 seconds)
+    fn cleanup_notifications(&mut self) {
+        let now = std::time::Instant::now();
+        self.notifications.retain(|n| {
+            now.duration_since(n.created_at).as_secs() < 5
+        });
+    }
+
+    /// Check if any agent completed its task and update plan
+    fn check_agent_task_completions(&mut self) {
+        // Collect completed task IDs
+        let completed: Vec<String> = self
+            .task_agents
+            .iter()
+            .filter_map(|(task_id, &agent_index)| {
+                self.agent_manager
+                    .get(agent_index)
+                    .filter(|a| a.status == AgentStatus::Ended)
+                    .map(|_| task_id.clone())
+            })
+            .collect();
+
+        // Mark tasks as completed
+        for task_id in completed {
+            if let Some(ref mut plan) = self.current_plan {
+                plan.update_status(&task_id, TaskStatus::Completed);
+            }
+            self.task_agents.remove(&task_id);
+        }
     }
 
     /// Resize all agents
@@ -544,6 +878,12 @@ fn main() -> Result<()> {
         // Check all agents' status
         app.agent_manager.check_all_status();
 
+        // Plan processing
+        app.check_plan();
+        app.check_agent_task_completions();
+        app.process_plan();
+        app.cleanup_notifications();
+
         // Check if active agent just ended and has a worktree (for review)
         if app.mode == AppMode::Normal {
             let active_index = app.agent_manager.active_index();
@@ -659,6 +999,95 @@ fn ui(f: &mut Frame, app: &mut App) {
         }
         AppMode::Normal => {}
     }
+
+    // Render notifications at the bottom
+    if !app.notifications.is_empty() {
+        render_notifications(f, app, f.area());
+    }
+
+    // Render plan status if active
+    if app.current_plan.is_some() {
+        render_plan_status(f, app, f.area());
+    }
+}
+
+/// Render notifications at the bottom of the screen
+fn render_notifications(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let notification_count = app.notifications.len().min(3); // Show max 3 notifications
+    if notification_count == 0 {
+        return;
+    }
+
+    let height = notification_count as u16 + 2; // +2 for borders
+    let notification_area = ratatui::layout::Rect {
+        x: area.x + 2,
+        y: area.height.saturating_sub(height + 1),
+        width: area.width.saturating_sub(4).min(60),
+        height,
+    };
+
+    let lines: Vec<Line> = app
+        .notifications
+        .iter()
+        .rev()
+        .take(3)
+        .map(|n| {
+            let (prefix, style) = match n.level {
+                cctakt::plan::NotifyLevel::Info => ("ℹ", Style::default().fg(Color::Cyan)),
+                cctakt::plan::NotifyLevel::Warning => ("⚠", Style::default().fg(Color::Yellow)),
+                cctakt::plan::NotifyLevel::Error => ("✗", Style::default().fg(Color::Red)),
+                cctakt::plan::NotifyLevel::Success => ("✓", Style::default().fg(Color::Green)),
+            };
+            Line::from(vec![
+                Span::styled(format!(" {} ", prefix), style),
+                Span::raw(&n.message),
+            ])
+        })
+        .collect();
+
+    let notification_widget = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+
+    f.render_widget(Clear, notification_area);
+    f.render_widget(notification_widget, notification_area);
+}
+
+/// Render plan status indicator
+fn render_plan_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let Some(ref plan) = app.current_plan else {
+        return;
+    };
+
+    let (pending, running, completed, failed) = plan.count_by_status();
+    let total = plan.tasks.len();
+
+    let status_text = format!(
+        " Plan: {}/{} ({} running, {} failed) ",
+        completed, total, running, failed
+    );
+
+    let status_area = ratatui::layout::Rect {
+        x: area.width.saturating_sub(status_text.len() as u16 + 2),
+        y: 0,
+        width: status_text.len() as u16,
+        height: 1,
+    };
+
+    let style = if failed > 0 {
+        Style::default().fg(Color::Red)
+    } else if running > 0 {
+        Style::default().fg(Color::Yellow)
+    } else if pending > 0 {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+
+    let status_widget = Paragraph::new(status_text).style(style);
+    f.render_widget(status_widget, status_area);
 }
 
 /// Render review merge screen

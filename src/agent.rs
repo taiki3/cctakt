@@ -164,6 +164,16 @@ impl AgentManager {
         self.agents.get_mut(self.active_index)
     }
 
+    /// Get an agent by index
+    pub fn get(&self, index: usize) -> Option<&Agent> {
+        self.agents.get(index)
+    }
+
+    /// Get an agent by index mutably
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut Agent> {
+        self.agents.get_mut(index)
+    }
+
     /// Switch to a specific agent by index
     pub fn switch_to(&mut self, index: usize) {
         if index < self.agents.len() {
