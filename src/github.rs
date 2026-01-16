@@ -38,6 +38,65 @@ pub struct Label {
     pub color: String,
 }
 
+/// GitHub Pull Request representation
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PullRequest {
+    /// PR number
+    pub number: u64,
+
+    /// PR title
+    pub title: String,
+
+    /// PR body (description)
+    pub body: Option<String>,
+
+    /// PR state ("open", "closed", "merged")
+    pub state: String,
+
+    /// URL to the PR on GitHub
+    pub html_url: String,
+
+    /// Head branch name
+    pub head: PullRequestRef,
+
+    /// Base branch name
+    pub base: PullRequestRef,
+
+    /// Whether the PR is a draft
+    #[serde(default)]
+    pub draft: bool,
+}
+
+/// Pull Request branch reference
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PullRequestRef {
+    /// Branch name
+    #[serde(rename = "ref")]
+    pub branch: String,
+
+    /// SHA of the commit
+    pub sha: String,
+}
+
+/// Parameters for creating a pull request
+#[derive(Debug, Clone)]
+pub struct CreatePullRequest {
+    /// PR title
+    pub title: String,
+
+    /// PR body/description
+    pub body: Option<String>,
+
+    /// Head branch (the branch with changes)
+    pub head: String,
+
+    /// Base branch (the branch to merge into)
+    pub base: String,
+
+    /// Whether to create as draft
+    pub draft: bool,
+}
+
 /// GitHub API client
 pub struct GitHubClient {
     /// Repository in "owner/repo" format
@@ -223,6 +282,110 @@ impl GitHubClient {
         Ok(())
     }
 
+    /// Create a pull request
+    ///
+    /// # Arguments
+    /// * `params` - Pull request parameters
+    ///
+    /// # Returns
+    /// The created pull request
+    pub fn create_pull_request(&self, params: &CreatePullRequest) -> Result<PullRequest> {
+        let url = format!(
+            "https://api.github.com/repos/{}/pulls",
+            self.repository
+        );
+
+        let token = self.token.as_ref()
+            .ok_or_else(|| anyhow!("Authentication required to create pull requests"))?;
+
+        let mut json_body = ureq::json!({
+            "title": params.title,
+            "head": params.head,
+            "base": params.base,
+            "draft": params.draft,
+        });
+
+        if let Some(ref body) = params.body {
+            json_body["body"] = serde_json::Value::String(body.clone());
+        }
+
+        let response = ureq::post(&url)
+            .set("Accept", "application/vnd.github.v3+json")
+            .set("User-Agent", "cctakt")
+            .set("Authorization", &format!("Bearer {token}"))
+            .send_json(json_body)
+            .with_context(|| "Failed to create pull request")?;
+
+        if response.status() != 201 {
+            return Err(anyhow!(
+                "Failed to create pull request: HTTP {}",
+                response.status()
+            ));
+        }
+
+        let pr: PullRequest = response
+            .into_json()
+            .context("Failed to parse pull request response")?;
+
+        Ok(pr)
+    }
+
+    /// Get a pull request by number
+    pub fn get_pull_request(&self, number: u64) -> Result<PullRequest> {
+        let url = format!(
+            "https://api.github.com/repos/{}/pulls/{}",
+            self.repository, number
+        );
+
+        let request = self.build_request(&url);
+        let response = request
+            .call()
+            .with_context(|| format!("Failed to fetch pull request #{number}"))?;
+
+        let pr: PullRequest = response
+            .into_json()
+            .context("Failed to parse pull request response")?;
+
+        Ok(pr)
+    }
+
+    /// List pull requests
+    ///
+    /// # Arguments
+    /// * `state` - PR state: "open", "closed", or "all"
+    /// * `head` - Filter by head branch (format: "owner:branch" or just "branch")
+    /// * `base` - Filter by base branch
+    pub fn list_pull_requests(
+        &self,
+        state: &str,
+        head: Option<&str>,
+        base: Option<&str>,
+    ) -> Result<Vec<PullRequest>> {
+        let mut url = format!(
+            "https://api.github.com/repos/{}/pulls?state={}",
+            self.repository, state
+        );
+
+        if let Some(head_branch) = head {
+            url.push_str(&format!("&head={head_branch}"));
+        }
+
+        if let Some(base_branch) = base {
+            url.push_str(&format!("&base={base_branch}"));
+        }
+
+        let request = self.build_request(&url);
+        let response = request
+            .call()
+            .with_context(|| "Failed to fetch pull requests")?;
+
+        let prs: Vec<PullRequest> = response
+            .into_json()
+            .context("Failed to parse pull requests response")?;
+
+        Ok(prs)
+    }
+
     /// Check if client has authentication
     pub fn has_auth(&self) -> bool {
         self.token.is_some()
@@ -328,6 +491,100 @@ mod tests {
 
         assert_eq!(client.repository(), "owner/repo");
         assert!(!client.has_auth());
+    }
+
+    #[test]
+    fn test_create_pull_request_params() {
+        let params = CreatePullRequest {
+            title: "Add new feature".to_string(),
+            body: Some("This PR adds a new feature".to_string()),
+            head: "feature-branch".to_string(),
+            base: "main".to_string(),
+            draft: false,
+        };
+
+        assert_eq!(params.title, "Add new feature");
+        assert_eq!(params.head, "feature-branch");
+        assert_eq!(params.base, "main");
+        assert!(!params.draft);
+    }
+
+    #[test]
+    fn test_create_pull_request_params_without_body() {
+        let params = CreatePullRequest {
+            title: "Quick fix".to_string(),
+            body: None,
+            head: "fix-branch".to_string(),
+            base: "main".to_string(),
+            draft: true,
+        };
+
+        assert!(params.body.is_none());
+        assert!(params.draft);
+    }
+
+    #[test]
+    fn test_pull_request_ref() {
+        let json = r#"{
+            "ref": "feature-branch",
+            "sha": "abc123def456"
+        }"#;
+
+        let pr_ref: PullRequestRef = serde_json::from_str(json).unwrap();
+        assert_eq!(pr_ref.branch, "feature-branch");
+        assert_eq!(pr_ref.sha, "abc123def456");
+    }
+
+    #[test]
+    fn test_pull_request_deserialize() {
+        let json = r#"{
+            "number": 42,
+            "title": "Add authentication",
+            "body": "This PR adds JWT authentication",
+            "state": "open",
+            "html_url": "https://github.com/test/repo/pull/42",
+            "head": {
+                "ref": "feature/auth",
+                "sha": "abc123"
+            },
+            "base": {
+                "ref": "main",
+                "sha": "def456"
+            },
+            "draft": false
+        }"#;
+
+        let pr: PullRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(pr.number, 42);
+        assert_eq!(pr.title, "Add authentication");
+        assert_eq!(pr.body, Some("This PR adds JWT authentication".to_string()));
+        assert_eq!(pr.state, "open");
+        assert_eq!(pr.head.branch, "feature/auth");
+        assert_eq!(pr.base.branch, "main");
+        assert!(!pr.draft);
+    }
+
+    #[test]
+    fn test_pull_request_deserialize_draft_default() {
+        let json = r#"{
+            "number": 1,
+            "title": "Test",
+            "body": null,
+            "state": "open",
+            "html_url": "https://github.com/test/repo/pull/1",
+            "head": {
+                "ref": "test",
+                "sha": "abc"
+            },
+            "base": {
+                "ref": "main",
+                "sha": "def"
+            }
+        }"#;
+
+        let pr: PullRequest = serde_json::from_str(json).unwrap();
+        // draft should default to false when not present
+        assert!(!pr.draft);
     }
 }
 
