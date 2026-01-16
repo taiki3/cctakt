@@ -7,6 +7,7 @@
 //!
 //! ## Core
 //! - [`worktree`] - Git worktree lifecycle management
+//! - [`plan`] - Execution plan management for orchestrator communication
 //!
 //! ## UI Components
 //! - [`dialog`] - Input dialog widget for user input
@@ -27,6 +28,7 @@
 
 // Core
 pub mod worktree;
+pub mod plan;
 
 // UI Components
 pub mod dialog;
@@ -47,6 +49,7 @@ pub mod anthropic;
 
 // Re-export commonly used types
 pub use worktree::{WorktreeInfo, WorktreeManager};
+pub use plan::{Plan, PlanManager, Task, TaskAction, TaskStatus};
 pub use dialog::{DialogResult, InputDialog};
 pub use diffview::DiffView;
 pub use merge::{MergeManager, MergePreview};
