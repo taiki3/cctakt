@@ -3,25 +3,28 @@ mod agent;
 use agent::{AgentManager, AgentStatus};
 use anyhow::{Context, Result};
 use cctakt::{
-    Config, GitHubClient, Issue, IssuePicker, IssuePickerResult, WorktreeManager,
-    issue_picker::centered_rect, suggest_branch_name,
+    issue_picker::centered_rect, suggest_branch_name, Config, DiffView, GitHubClient, Issue,
+    IssuePicker, IssuePickerResult, MergeManager, WorktreeManager,
 };
 use crossterm::{
     cursor::Hide,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{self, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        self, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    },
 };
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal,
 };
 use std::env;
 use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Application mode
@@ -31,6 +34,28 @@ enum AppMode {
     Normal,
     /// Issue picker mode
     IssuePicker,
+    /// Review and merge mode - show diff and commit log
+    ReviewMerge,
+}
+
+/// Review state for a completed agent
+struct ReviewState {
+    /// Agent index being reviewed
+    agent_index: usize,
+    /// Branch name
+    branch: String,
+    /// Working directory (worktree path)
+    worktree_path: PathBuf,
+    /// Diff view
+    diff_view: DiffView,
+    /// Commit log
+    commit_log: String,
+    /// Merge preview info
+    files_changed: usize,
+    insertions: usize,
+    deletions: usize,
+    /// Potential conflicts
+    conflicts: Vec<String>,
 }
 
 /// Application state
@@ -51,6 +76,10 @@ struct App {
     issue_picker: IssuePicker,
     /// Current issue being worked on (per agent)
     agent_issues: Vec<Option<Issue>>,
+    /// Worktree paths per agent
+    agent_worktrees: Vec<Option<PathBuf>>,
+    /// Review state for merge review mode
+    review_state: Option<ReviewState>,
 }
 
 impl App {
@@ -76,6 +105,8 @@ impl App {
             github_client,
             issue_picker: IssuePicker::new(),
             agent_issues: Vec::new(),
+            agent_worktrees: Vec::new(),
+            review_state: None,
         }
     }
 
@@ -123,19 +154,26 @@ impl App {
         let branch_name = suggest_branch_name(&issue, &self.config.branch_prefix);
 
         // Create worktree if available
-        let working_dir = if let Some(ref wt_manager) = self.worktree_manager {
+        let (working_dir, worktree_path) = if let Some(ref wt_manager) = self.worktree_manager {
             match wt_manager.create(&branch_name, &self.config.worktree_dir) {
-                Ok(path) => path,
-                Err(_) => env::current_dir().context("Failed to get current directory")?,
+                Ok(path) => (path.clone(), Some(path)),
+                Err(_) => (
+                    env::current_dir().context("Failed to get current directory")?,
+                    None,
+                ),
             }
         } else {
-            env::current_dir().context("Failed to get current directory")?
+            (
+                env::current_dir().context("Failed to get current directory")?,
+                None,
+            )
         };
 
         let name = format!("#{}", issue.number);
         self.agent_manager
             .add(name, working_dir, self.content_rows, self.content_cols)?;
         self.agent_issues.push(Some(issue));
+        self.agent_worktrees.push(worktree_path);
 
         Ok(())
     }
@@ -159,6 +197,7 @@ impl App {
         self.agent_manager
             .add(display_name, working_dir, self.content_rows, self.content_cols)?;
         self.agent_issues.push(None);
+        self.agent_worktrees.push(None);
         Ok(())
     }
 
@@ -169,6 +208,102 @@ impl App {
         if index < self.agent_issues.len() {
             self.agent_issues.remove(index);
         }
+        if index < self.agent_worktrees.len() {
+            self.agent_worktrees.remove(index);
+        }
+    }
+
+    /// Start review mode for the agent at given index
+    fn start_review(&mut self, agent_index: usize) {
+        // Get worktree path for this agent
+        let worktree_path = if agent_index < self.agent_worktrees.len() {
+            self.agent_worktrees[agent_index].clone()
+        } else {
+            None
+        };
+
+        let Some(worktree_path) = worktree_path else {
+            // No worktree, can't review
+            return;
+        };
+
+        // Get branch name from worktree path
+        let branch = worktree_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Get main repo path
+        let repo_path = env::current_dir().unwrap_or_default();
+        let merger = MergeManager::new(&repo_path);
+
+        // Get diff
+        let diff = merger.diff(&branch).unwrap_or_default();
+
+        // Get commit log
+        let commit_log = get_commit_log(&worktree_path);
+
+        // Get merge preview
+        let preview = merger.preview(&branch).ok();
+        let (files_changed, insertions, deletions, conflicts) = match preview {
+            Some(p) => (p.files_changed, p.insertions, p.deletions, p.conflicts),
+            None => (0, 0, 0, vec![]),
+        };
+
+        // Create diff view
+        let diff_view = DiffView::new(diff).with_title(format!("{} → main", branch));
+
+        self.review_state = Some(ReviewState {
+            agent_index,
+            branch,
+            worktree_path,
+            diff_view,
+            commit_log,
+            files_changed,
+            insertions,
+            deletions,
+            conflicts,
+        });
+
+        self.mode = AppMode::ReviewMerge;
+    }
+
+    /// Execute merge and cleanup
+    fn execute_merge(&mut self) -> Result<()> {
+        let review = self.review_state.take();
+        let Some(review) = review else {
+            return Ok(());
+        };
+
+        let repo_path = env::current_dir().context("Failed to get current directory")?;
+        let merger = MergeManager::new(&repo_path);
+
+        // Perform merge
+        merger.merge_no_ff(&review.branch, None)?;
+
+        // Remove worktree
+        if let Some(ref wt_manager) = self.worktree_manager {
+            let _ = wt_manager.remove(&review.worktree_path);
+        }
+
+        // Close the agent
+        self.agent_manager.close(review.agent_index);
+        if review.agent_index < self.agent_issues.len() {
+            self.agent_issues.remove(review.agent_index);
+        }
+        if review.agent_index < self.agent_worktrees.len() {
+            self.agent_worktrees.remove(review.agent_index);
+        }
+
+        self.mode = AppMode::Normal;
+        Ok(())
+    }
+
+    /// Cancel review and return to normal mode
+    fn cancel_review(&mut self) {
+        self.review_state = None;
+        self.mode = AppMode::Normal;
     }
 
     /// Resize all agents
@@ -176,6 +311,21 @@ impl App {
         self.content_cols = cols;
         self.content_rows = rows;
         self.agent_manager.resize_all(cols, rows);
+    }
+}
+
+/// Get commit log from worktree
+fn get_commit_log(worktree_path: &PathBuf) -> String {
+    use std::process::Command;
+
+    let output = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["log", "--oneline", "-n", "20", "--no-decorate"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => String::new(),
     }
 }
 
@@ -266,6 +416,50 @@ fn main() -> Result<()> {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     match app.mode {
+                        AppMode::ReviewMerge => {
+                            // Handle review mode input
+                            match key.code {
+                                KeyCode::Enter | KeyCode::Char('m') | KeyCode::Char('M') => {
+                                    // Execute merge
+                                    let _ = app.execute_merge();
+                                }
+                                KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('C') => {
+                                    // Cancel review
+                                    app.cancel_review();
+                                }
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        state.diff_view.scroll_up(1);
+                                    }
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        state.diff_view.scroll_down(1);
+                                    }
+                                }
+                                KeyCode::PageUp => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        state.diff_view.page_up(20);
+                                    }
+                                }
+                                KeyCode::PageDown => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        state.diff_view.page_down(20);
+                                    }
+                                }
+                                KeyCode::Home => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        state.diff_view.scroll_to_top();
+                                    }
+                                }
+                                KeyCode::End => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        state.diff_view.scroll_to_bottom();
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
                         AppMode::IssuePicker => {
                             // Handle issue picker input
                             if let Some(result) = app.issue_picker.handle_key(key.code) {
@@ -349,6 +543,21 @@ fn main() -> Result<()> {
 
         // Check all agents' status
         app.agent_manager.check_all_status();
+
+        // Check if active agent just ended and has a worktree (for review)
+        if app.mode == AppMode::Normal {
+            let active_index = app.agent_manager.active_index();
+            if let Some(agent) = app.agent_manager.active() {
+                if agent.status == AgentStatus::Ended {
+                    // Check if this agent has a worktree
+                    let has_worktree = active_index < app.agent_worktrees.len()
+                        && app.agent_worktrees[active_index].is_some();
+                    if has_worktree {
+                        app.start_review(active_index);
+                    }
+                }
+            }
+        }
 
         if app.should_quit {
             break;
@@ -439,11 +648,105 @@ fn ui(f: &mut Frame, app: &mut App) {
         }
     }
 
-    // Render issue picker overlay if active
-    if app.mode == AppMode::IssuePicker {
-        let popup_area = centered_rect(80, 70, f.area());
-        app.issue_picker.render(f, popup_area);
+    // Render overlays based on mode
+    match app.mode {
+        AppMode::IssuePicker => {
+            let popup_area = centered_rect(80, 70, f.area());
+            app.issue_picker.render(f, popup_area);
+        }
+        AppMode::ReviewMerge => {
+            render_review_merge(f, app, f.area());
+        }
+        AppMode::Normal => {}
     }
+}
+
+/// Render review merge screen
+fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    let Some(ref mut state) = app.review_state else {
+        return;
+    };
+
+    // Clear the area first
+    f.render_widget(Clear, area);
+
+    // Layout: header + diff + footer
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(6), // Header with stats
+            Constraint::Min(10),   // Diff view
+            Constraint::Length(3), // Footer with help
+        ])
+        .split(area);
+
+    // Header with merge info
+    let mut header_lines = vec![
+        Line::from(vec![
+            Span::styled(" Review Merge: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(&state.branch, Style::default().fg(Color::Yellow)),
+            Span::raw(" → "),
+            Span::styled("main", Style::default().fg(Color::Green)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" Stats: "),
+            Span::styled(format!("{} files", state.files_changed), Style::default().fg(Color::White)),
+            Span::raw(", "),
+            Span::styled(format!("+{}", state.insertions), Style::default().fg(Color::Green)),
+            Span::raw(" / "),
+            Span::styled(format!("-{}", state.deletions), Style::default().fg(Color::Red)),
+        ]),
+    ];
+
+    // Show conflicts warning if any
+    if !state.conflicts.is_empty() {
+        header_lines.push(Line::from(vec![
+            Span::styled(" ⚠ Potential conflicts: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                state.conflicts.join(", "),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+    }
+
+    // Show recent commits
+    if !state.commit_log.is_empty() {
+        header_lines.push(Line::from(""));
+        header_lines.push(Line::from(vec![
+            Span::styled(" Recent commits: ", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                state.commit_log.lines().next().unwrap_or(""),
+                Style::default().fg(Color::Gray),
+            ),
+        ]));
+    }
+
+    let header = Paragraph::new(header_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    f.render_widget(header, chunks[0]);
+
+    // Diff view
+    state.diff_view.render(f, chunks[1]);
+
+    // Footer with help
+    let footer = Paragraph::new(vec![Line::from(vec![
+        Span::styled(" [Enter/M]", Style::default().fg(Color::Green)),
+        Span::raw(" Merge  "),
+        Span::styled("[Esc/C]", Style::default().fg(Color::Red)),
+        Span::raw(" Cancel  "),
+        Span::styled("[↑/↓/PgUp/PgDn]", Style::default().fg(Color::Cyan)),
+        Span::raw(" Scroll"),
+    ])])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(footer, chunks[2]);
 }
 
 /// Render header with tabs
@@ -935,5 +1238,95 @@ mod tests {
     fn test_github_client_with_auth() {
         let client = GitHubClient::with_token("owner/repo", Some("token".to_string()));
         assert!(client.has_auth());
+    }
+
+    // ==================== ReviewMerge mode tests ====================
+
+    #[test]
+    fn test_app_mode_review_merge() {
+        assert_eq!(AppMode::ReviewMerge, AppMode::ReviewMerge);
+        assert_ne!(AppMode::ReviewMerge, AppMode::Normal);
+        assert_ne!(AppMode::ReviewMerge, AppMode::IssuePicker);
+    }
+
+    #[test]
+    fn test_review_state_creation() {
+        let state = ReviewState {
+            agent_index: 0,
+            branch: "feature/test".to_string(),
+            worktree_path: PathBuf::from("/tmp/worktree"),
+            diff_view: DiffView::new("+ added line\n- removed line".to_string()),
+            commit_log: "abc1234 Initial commit".to_string(),
+            files_changed: 5,
+            insertions: 100,
+            deletions: 20,
+            conflicts: vec!["src/main.rs".to_string()],
+        };
+
+        assert_eq!(state.agent_index, 0);
+        assert_eq!(state.branch, "feature/test");
+        assert_eq!(state.files_changed, 5);
+        assert_eq!(state.insertions, 100);
+        assert_eq!(state.deletions, 20);
+        assert_eq!(state.conflicts.len(), 1);
+    }
+
+    #[test]
+    fn test_get_commit_log() {
+        // Test on current repo (should work since we're in a git repo)
+        let log = get_commit_log(&PathBuf::from("."));
+        // Should return some commits
+        assert!(!log.is_empty());
+    }
+
+    #[test]
+    fn test_diff_view_creation() {
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
+ fn main() {
++    println!("Hello");
+ }
+"#;
+        let view = DiffView::new(diff.to_string());
+        // DiffView should be created without panic
+        assert!(!view.is_empty());
+    }
+
+    #[test]
+    fn test_diff_view_with_title() {
+        let view = DiffView::new("test".to_string()).with_title("branch → main".to_string());
+        // with_title should work without panic
+        assert!(!view.is_empty());
+    }
+
+    #[test]
+    fn test_diff_view_scrolling() {
+        let diff = (0..100)
+            .map(|i| format!("+line {}\n", i))
+            .collect::<String>();
+        let mut view = DiffView::new(diff);
+
+        // Test scroll operations
+        view.scroll_down(10);
+        view.scroll_up(5);
+        view.page_down(20);
+        view.page_up(10);
+        view.scroll_to_top();
+        view.scroll_to_bottom();
+        // All operations should complete without panic
+    }
+
+    #[test]
+    fn test_merge_manager_creation() {
+        let manager = MergeManager::new("/tmp/test-repo");
+        assert_eq!(manager.main_branch(), "main");
+    }
+
+    #[test]
+    fn test_merge_manager_with_main_branch() {
+        let manager = MergeManager::new("/tmp/test-repo").with_main_branch("master");
+        assert_eq!(manager.main_branch(), "master");
     }
 }
