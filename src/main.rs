@@ -2,6 +2,10 @@ mod agent;
 
 use agent::{AgentManager, AgentStatus};
 use anyhow::{Context, Result};
+use cctakt::{
+    Config, GitHubClient, Issue, IssuePicker, IssuePickerResult, WorktreeManager,
+    issue_picker::centered_rect, suggest_branch_name,
+};
 use crossterm::{
     cursor::Hide,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -20,22 +24,120 @@ use std::env;
 use std::io;
 use std::time::Duration;
 
+/// Application mode
+#[derive(Debug, Clone, PartialEq)]
+enum AppMode {
+    /// Normal mode - agent PTY view
+    Normal,
+    /// Issue picker mode
+    IssuePicker,
+}
+
 /// Application state
 struct App {
     agent_manager: AgentManager,
     should_quit: bool,
     content_rows: u16,
     content_cols: u16,
+    /// Current application mode
+    mode: AppMode,
+    /// Configuration
+    config: Config,
+    /// Worktree manager
+    worktree_manager: Option<WorktreeManager>,
+    /// GitHub client
+    github_client: Option<GitHubClient>,
+    /// Issue picker UI
+    issue_picker: IssuePicker,
+    /// Current issue being worked on (per agent)
+    agent_issues: Vec<Option<Issue>>,
 }
 
 impl App {
-    fn new(rows: u16, cols: u16) -> Self {
+    fn new(rows: u16, cols: u16, config: Config) -> Self {
+        // Initialize worktree manager
+        let worktree_manager = WorktreeManager::from_current_dir().ok();
+
+        // Initialize GitHub client if repository is configured
+        let github_client = config
+            .github
+            .repository
+            .as_ref()
+            .and_then(|repo| GitHubClient::new(repo).ok());
+
         Self {
             agent_manager: AgentManager::new(),
             should_quit: false,
             content_rows: rows,
             content_cols: cols,
+            mode: AppMode::Normal,
+            config,
+            worktree_manager,
+            github_client,
+            issue_picker: IssuePicker::new(),
+            agent_issues: Vec::new(),
         }
+    }
+
+    /// Open issue picker and fetch issues
+    fn open_issue_picker(&mut self) {
+        if self.github_client.is_none() {
+            // Try to detect repository from git remote
+            if let Some(repo) = detect_github_repo() {
+                self.github_client = GitHubClient::new(&repo).ok();
+            }
+        }
+
+        if self.github_client.is_some() {
+            self.mode = AppMode::IssuePicker;
+            self.fetch_issues();
+        }
+    }
+
+    /// Fetch issues from GitHub
+    fn fetch_issues(&mut self) {
+        self.issue_picker.set_loading(true);
+
+        if let Some(ref client) = self.github_client {
+            let labels: Vec<&str> = self
+                .config
+                .github
+                .labels
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+
+            match client.fetch_issues(&labels, "open") {
+                Ok(issues) => {
+                    self.issue_picker.set_issues(issues);
+                }
+                Err(e) => {
+                    self.issue_picker.set_error(Some(e.to_string()));
+                }
+            }
+        }
+    }
+
+    /// Add a new agent from a selected issue
+    fn add_agent_from_issue(&mut self, issue: Issue) -> Result<()> {
+        let branch_name = suggest_branch_name(&issue, &self.config.branch_prefix);
+
+        // Create worktree if available
+        let working_dir = if let Some(ref wt_manager) = self.worktree_manager {
+            match wt_manager.create(&branch_name, &self.config.worktree_dir) {
+                Ok(path) => path,
+                Err(_) => env::current_dir().context("Failed to get current directory")?,
+            }
+        } else {
+            env::current_dir().context("Failed to get current directory")?
+        };
+
+        let name = format!("#{}", issue.number);
+        self.agent_manager
+            .add(name, working_dir, self.content_rows, self.content_cols)?;
+        self.agent_issues.push(Some(issue));
+
+        Ok(())
     }
 
     /// Add a new agent with the current directory
@@ -54,7 +156,9 @@ impl App {
             format!("{}-{}", name, agent_count + 1)
         };
 
-        self.agent_manager.add(display_name, working_dir, self.content_rows, self.content_cols)?;
+        self.agent_manager
+            .add(display_name, working_dir, self.content_rows, self.content_cols)?;
+        self.agent_issues.push(None);
         Ok(())
     }
 
@@ -62,6 +166,9 @@ impl App {
     fn close_active_agent(&mut self) {
         let index = self.agent_manager.active_index();
         self.agent_manager.close(index);
+        if index < self.agent_issues.len() {
+            self.agent_issues.remove(index);
+        }
     }
 
     /// Resize all agents
@@ -72,7 +179,43 @@ impl App {
     }
 }
 
+/// Detect GitHub repository from git remote
+fn detect_github_repo() -> Option<String> {
+    use std::process::Command;
+
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    // Parse GitHub URL formats:
+    // - https://github.com/owner/repo.git
+    // - git@github.com:owner/repo.git
+    // - https://github.com/owner/repo
+    if url.contains("github.com") {
+        let repo = url
+            .trim_end_matches(".git")
+            .split("github.com")
+            .last()?
+            .trim_start_matches('/')
+            .trim_start_matches(':')
+            .to_string();
+        Some(repo)
+    } else {
+        None
+    }
+}
+
 fn main() -> Result<()> {
+    // Load configuration
+    let config = Config::load().unwrap_or_default();
+
     // Get terminal size
     let (cols, rows) = terminal::size().context("Failed to get terminal size")?;
     let content_rows = rows.saturating_sub(3); // Header 1 line + border 2 lines
@@ -82,13 +225,16 @@ fn main() -> Result<()> {
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, Hide)?;
-    execute!(stdout, crossterm::terminal::SetTitle("cctakt - Claude Code Orchestrator"))?;
+    execute!(
+        stdout,
+        crossterm::terminal::SetTitle("cctakt - Claude Code Orchestrator")
+    )?;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     // Initialize app
-    let mut app = App::new(content_rows, content_cols);
+    let mut app = App::new(content_rows, content_cols, config);
 
     // Add initial agent
     if let Err(e) = app.add_agent() {
@@ -105,55 +251,79 @@ fn main() -> Result<()> {
     // Main loop
     loop {
         // Draw
-        terminal.draw(|f| ui(f, &app))?;
+        terminal.draw(|f| ui(f, &mut app))?;
 
         // Poll events (16ms ≈ 60fps)
         if event::poll(Duration::from_millis(16))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if app.agent_manager.is_empty() {
-                        // No agents - show menu
-                        match key.code {
-                            KeyCode::Char('n') | KeyCode::Char('N') => {
-                                let _ = app.add_agent();
+                    match app.mode {
+                        AppMode::IssuePicker => {
+                            // Handle issue picker input
+                            if let Some(result) = app.issue_picker.handle_key(key.code) {
+                                match result {
+                                    IssuePickerResult::Selected(issue) => {
+                                        app.mode = AppMode::Normal;
+                                        let _ = app.add_agent_from_issue(issue);
+                                    }
+                                    IssuePickerResult::Cancel => {
+                                        app.mode = AppMode::Normal;
+                                    }
+                                    IssuePickerResult::Refresh => {
+                                        app.fetch_issues();
+                                    }
+                                }
                             }
-                            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
-                                app.should_quit = true;
-                            }
-                            _ => {}
                         }
-                    } else {
-                        // Handle keybindings
-                        let handled = handle_keybinding(&mut app, key.modifiers, key.code);
+                        AppMode::Normal => {
+                            if app.agent_manager.is_empty() {
+                                // No agents - show menu
+                                match key.code {
+                                    KeyCode::Char('n') | KeyCode::Char('N') => {
+                                        let _ = app.add_agent();
+                                    }
+                                    KeyCode::Char('i') | KeyCode::Char('I') => {
+                                        app.open_issue_picker();
+                                    }
+                                    KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                                        app.should_quit = true;
+                                    }
+                                    _ => {}
+                                }
+                            } else {
+                                // Handle keybindings
+                                let handled = handle_keybinding(&mut app, key.modifiers, key.code);
 
-                        if !handled {
-                            // Forward to active agent's PTY
-                            if let Some(agent) = app.agent_manager.active_mut() {
-                                if agent.status == AgentStatus::Running {
-                                    match (key.modifiers, key.code) {
-                                        (KeyModifiers::CONTROL, KeyCode::Char(c)) => {
-                                            let ctrl_char = (c as u8) & 0x1f;
-                                            agent.send_bytes(&[ctrl_char]);
+                                if !handled {
+                                    // Forward to active agent's PTY
+                                    if let Some(agent) = app.agent_manager.active_mut() {
+                                        if agent.status == AgentStatus::Running {
+                                            match (key.modifiers, key.code) {
+                                                (KeyModifiers::CONTROL, KeyCode::Char(c)) => {
+                                                    let ctrl_char = (c as u8) & 0x1f;
+                                                    agent.send_bytes(&[ctrl_char]);
+                                                }
+                                                (_, KeyCode::Enter) => agent.send_bytes(b"\r"),
+                                                (_, KeyCode::Backspace) => agent.send_bytes(&[0x7f]),
+                                                (_, KeyCode::Tab) => agent.send_bytes(b"\t"),
+                                                (_, KeyCode::Esc) => agent.send_bytes(&[0x1b]),
+                                                (_, KeyCode::Up) => agent.send_bytes(b"\x1b[A"),
+                                                (_, KeyCode::Down) => agent.send_bytes(b"\x1b[B"),
+                                                (_, KeyCode::Right) => agent.send_bytes(b"\x1b[C"),
+                                                (_, KeyCode::Left) => agent.send_bytes(b"\x1b[D"),
+                                                (_, KeyCode::Home) => agent.send_bytes(b"\x1b[H"),
+                                                (_, KeyCode::End) => agent.send_bytes(b"\x1b[F"),
+                                                (_, KeyCode::PageUp) => agent.send_bytes(b"\x1b[5~"),
+                                                (_, KeyCode::PageDown) => agent.send_bytes(b"\x1b[6~"),
+                                                (_, KeyCode::Delete) => agent.send_bytes(b"\x1b[3~"),
+                                                (_, KeyCode::Char(c)) => {
+                                                    let mut buf = [0u8; 4];
+                                                    let s = c.encode_utf8(&mut buf);
+                                                    agent.send_bytes(s.as_bytes());
+                                                }
+                                                _ => {}
+                                            }
                                         }
-                                        (_, KeyCode::Enter) => agent.send_bytes(b"\r"),
-                                        (_, KeyCode::Backspace) => agent.send_bytes(&[0x7f]),
-                                        (_, KeyCode::Tab) => agent.send_bytes(b"\t"),
-                                        (_, KeyCode::Esc) => agent.send_bytes(&[0x1b]),
-                                        (_, KeyCode::Up) => agent.send_bytes(b"\x1b[A"),
-                                        (_, KeyCode::Down) => agent.send_bytes(b"\x1b[B"),
-                                        (_, KeyCode::Right) => agent.send_bytes(b"\x1b[C"),
-                                        (_, KeyCode::Left) => agent.send_bytes(b"\x1b[D"),
-                                        (_, KeyCode::Home) => agent.send_bytes(b"\x1b[H"),
-                                        (_, KeyCode::End) => agent.send_bytes(b"\x1b[F"),
-                                        (_, KeyCode::PageUp) => agent.send_bytes(b"\x1b[5~"),
-                                        (_, KeyCode::PageDown) => agent.send_bytes(b"\x1b[6~"),
-                                        (_, KeyCode::Delete) => agent.send_bytes(b"\x1b[3~"),
-                                        (_, KeyCode::Char(c)) => {
-                                            let mut buf = [0u8; 4];
-                                            let s = c.encode_utf8(&mut buf);
-                                            agent.send_bytes(s.as_bytes());
-                                        }
-                                        _ => {}
                                     }
                                 }
                             }
@@ -201,6 +371,11 @@ fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> b
             let _ = app.add_agent();
             true
         }
+        // Ctrl+I: Open issue picker
+        (KeyModifiers::CONTROL, KeyCode::Char('i')) => {
+            app.open_issue_picker();
+            true
+        }
         // Ctrl+W: Close active agent
         (KeyModifiers::CONTROL, KeyCode::Char('w')) => {
             app.close_active_agent();
@@ -233,7 +408,7 @@ fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> b
     }
 }
 
-fn ui(f: &mut Frame, app: &App) {
+fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -254,6 +429,12 @@ fn ui(f: &mut Frame, app: &App) {
         } else {
             render_agent_screen(f, agent, chunks[1]);
         }
+    }
+
+    // Render issue picker overlay if active
+    if app.mode == AppMode::IssuePicker {
+        let popup_area = centered_rect(80, 70, f.area());
+        app.issue_picker.render(f, popup_area);
     }
 }
 
@@ -294,7 +475,7 @@ fn render_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // Add help text on the right
     spans.push(Span::styled(
-        " [^T:new ^W:close ^N/^P:switch ^Q:quit]",
+        " [^T:new ^I:issue ^W:close ^N/^P:switch ^Q:quit]",
         Style::default().fg(Color::DarkGray),
     ));
 
@@ -313,12 +494,16 @@ fn render_no_agent_menu(f: &mut Frame, area: ratatui::layout::Rect) {
             Span::raw(" New agent"),
         ]),
         Line::from(vec![
+            Span::styled("  [I]", Style::default().fg(Color::Cyan)),
+            Span::raw(" New agent from GitHub issue"),
+        ]),
+        Line::from(vec![
             Span::styled("  [Q]", Style::default().fg(Color::Red)),
             Span::raw(" Quit cctakt"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "  Press N or Q...",
+            "  Press N, I, or Q...",
             Style::default().fg(Color::DarkGray),
         )),
     ])
