@@ -4,8 +4,8 @@ use agent::{AgentManager, AgentStatus};
 use anyhow::{Context, Result};
 use cctakt::{
     issue_picker::centered_rect, suggest_branch_name, Config, DiffView, GitHubClient, Issue,
-    IssuePicker, IssuePickerResult, MergeManager, Plan, PlanManager, TaskAction, TaskStatus,
-    WorktreeManager,
+    IssuePicker, IssuePickerResult, MergeManager, Plan, PlanManager, TaskAction, TaskResult,
+    TaskStatus, WorktreeManager,
 };
 use crossterm::{
     cursor::Hide,
@@ -512,8 +512,13 @@ impl App {
                     format!("PR created: #{} - {}", pr.number, pr.title),
                     cctakt::plan::NotifyLevel::Success,
                 );
+                let result = TaskResult {
+                    commits: Vec::new(),
+                    pr_number: Some(pr.number),
+                    pr_url: Some(pr.html_url),
+                };
                 if let Some(ref mut plan) = self.current_plan {
-                    plan.update_status(task_id, TaskStatus::Completed);
+                    plan.mark_completed(task_id, result);
                 }
             }
             Err(e) => {
@@ -619,22 +624,39 @@ impl App {
 
     /// Check if any agent completed its task and update plan
     fn check_agent_task_completions(&mut self) {
-        // Collect completed task IDs
-        let completed: Vec<String> = self
+        // Collect completed task info (task_id, agent_index)
+        let completed: Vec<(String, usize)> = self
             .task_agents
             .iter()
             .filter_map(|(task_id, &agent_index)| {
                 self.agent_manager
                     .get(agent_index)
                     .filter(|a| a.status == AgentStatus::Ended)
-                    .map(|_| task_id.clone())
+                    .map(|_| (task_id.clone(), agent_index))
             })
             .collect();
 
-        // Mark tasks as completed
-        for task_id in completed {
+        // Mark tasks as completed with results
+        for (task_id, agent_index) in completed {
+            // Get commits from worktree
+            let commits = if agent_index < self.agent_worktrees.len() {
+                if let Some(ref worktree_path) = self.agent_worktrees[agent_index] {
+                    get_worker_commits(worktree_path)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            let result = TaskResult {
+                commits,
+                pr_number: None,
+                pr_url: None,
+            };
+
             if let Some(ref mut plan) = self.current_plan {
-                plan.update_status(&task_id, TaskStatus::Completed);
+                plan.mark_completed(&task_id, result);
             }
             self.task_agents.remove(&task_id);
         }
@@ -660,6 +682,50 @@ fn get_commit_log(worktree_path: &PathBuf) -> String {
     match output {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         _ => String::new(),
+    }
+}
+
+/// Get commits made by a worker (commits since branch creation)
+fn get_worker_commits(worktree_path: &PathBuf) -> Vec<String> {
+    use std::process::Command;
+
+    // Get commits that are ahead of main/master
+    // Try main first, then master
+    let bases = ["main", "master"];
+    for base in bases {
+        let output = Command::new("git")
+            .current_dir(worktree_path)
+            .args(["log", "--oneline", &format!("{}..HEAD", base)])
+            .output();
+
+        if let Ok(o) = output {
+            if o.status.success() {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let commits: Vec<String> = stdout
+                    .lines()
+                    .map(|s| s.to_string())
+                    .collect();
+                if !commits.is_empty() {
+                    return commits;
+                }
+            }
+        }
+    }
+
+    // Fallback: just get recent commits
+    let output = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["log", "--oneline", "-n", "10"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|s| s.to_string())
+                .collect()
+        }
+        _ => Vec::new(),
     }
 }
 

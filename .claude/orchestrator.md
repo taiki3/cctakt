@@ -148,12 +148,53 @@ Worktreeを削除する
 }
 ```
 
+## フィードバックの確認
+
+タスクが完了すると、cctakt は `result` フィールドに結果を書き込みます:
+
+```json
+{
+  "id": "worker-auth",
+  "status": "completed",
+  "result": {
+    "commits": [
+      "abc1234 feat: add login endpoint",
+      "def5678 feat: add JWT middleware"
+    ]
+  }
+}
+```
+
+### PR作成タスクの結果
+
+```json
+{
+  "id": "pr-auth",
+  "status": "completed",
+  "result": {
+    "pr_number": 42,
+    "pr_url": "https://github.com/owner/repo/pull/42"
+  }
+}
+```
+
+### フィードバック確認方法
+
+```bash
+cat .cctakt/plan.json | jq '.tasks[] | select(.status == "completed") | {id, result}'
+```
+
+Worker のコミット内容を確認して:
+- 次のステップを決定（PR作成、マージなど）
+- 問題があれば修正タスクを追加
+
 ## 重要なルール
 
 1. **タスクIDはユニークに**: 各タスクには一意のIDを付ける
 2. **説明は詳細に**: worker への task_description は具体的に書く
 3. **ブランチ名は規則に従う**: `feat/`, `fix/`, `docs/` などのプレフィックスを使用
 4. **ステータスは pending で作成**: cctakt が実行時に更新する
+5. **フィードバックを確認**: タスク完了後は result を確認して次のアクションを決定
 
 ## プラン書き込みコマンド
 

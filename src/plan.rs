@@ -57,6 +57,26 @@ pub struct Task {
     /// Timestamp when status was last updated
     #[serde(default)]
     pub updated_at: Option<u64>,
+
+    /// Task result (populated on completion)
+    #[serde(default)]
+    pub result: Option<TaskResult>,
+}
+
+/// Result of a completed task
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TaskResult {
+    /// Commits made during the task (format: "hash message")
+    #[serde(default)]
+    pub commits: Vec<String>,
+
+    /// PR number if a PR was created
+    #[serde(default)]
+    pub pr_number: Option<u64>,
+
+    /// PR URL if a PR was created
+    #[serde(default)]
+    pub pr_url: Option<String>,
 }
 
 /// Task action types
@@ -216,6 +236,18 @@ impl Plan {
         }
     }
 
+    /// Mark task as completed with result
+    pub fn mark_completed(&mut self, id: &str, result: TaskResult) -> bool {
+        if let Some(task) = self.get_task_mut(id) {
+            task.status = TaskStatus::Completed;
+            task.result = Some(result);
+            task.updated_at = Some(current_timestamp());
+            true
+        } else {
+            false
+        }
+    }
+
     /// Check if all tasks are completed (or failed/skipped)
     pub fn is_complete(&self) -> bool {
         self.tasks.iter().all(|t| {
@@ -251,6 +283,7 @@ impl Task {
             status: TaskStatus::Pending,
             error: None,
             updated_at: None,
+            result: None,
         }
     }
 
