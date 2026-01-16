@@ -193,11 +193,15 @@ fn detect_github_repo() -> Option<String> {
     }
 
     let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    parse_github_url(&url)
+}
 
-    // Parse GitHub URL formats:
-    // - https://github.com/owner/repo.git
-    // - git@github.com:owner/repo.git
-    // - https://github.com/owner/repo
+/// Parse GitHub repository from URL string
+/// Supports formats:
+/// - https://github.com/owner/repo.git
+/// - git@github.com:owner/repo.git
+/// - https://github.com/owner/repo
+fn parse_github_url(url: &str) -> Option<String> {
     if url.contains("github.com") {
         let repo = url
             .trim_end_matches(".git")
@@ -206,7 +210,11 @@ fn detect_github_repo() -> Option<String> {
             .trim_start_matches('/')
             .trim_start_matches(':')
             .to_string();
-        Some(repo)
+        if repo.is_empty() {
+            None
+        } else {
+            Some(repo)
+        }
     } else {
         None
     }
@@ -646,5 +654,286 @@ fn vt100_color_to_ratatui(color: vt100::Color) -> Color {
         vt100::Color::Idx(15) => Color::White,
         vt100::Color::Idx(idx) => Color::Indexed(idx),
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== parse_github_url tests ====================
+
+    #[test]
+    fn test_parse_github_url_https() {
+        let url = "https://github.com/owner/repo.git";
+        assert_eq!(parse_github_url(url), Some("owner/repo".to_string()));
+    }
+
+    #[test]
+    fn test_parse_github_url_https_no_git_suffix() {
+        let url = "https://github.com/owner/repo";
+        assert_eq!(parse_github_url(url), Some("owner/repo".to_string()));
+    }
+
+    #[test]
+    fn test_parse_github_url_ssh() {
+        let url = "git@github.com:owner/repo.git";
+        assert_eq!(parse_github_url(url), Some("owner/repo".to_string()));
+    }
+
+    #[test]
+    fn test_parse_github_url_ssh_no_git_suffix() {
+        let url = "git@github.com:owner/repo";
+        assert_eq!(parse_github_url(url), Some("owner/repo".to_string()));
+    }
+
+    #[test]
+    fn test_parse_github_url_non_github() {
+        let url = "https://gitlab.com/owner/repo.git";
+        assert_eq!(parse_github_url(url), None);
+    }
+
+    #[test]
+    fn test_parse_github_url_empty() {
+        assert_eq!(parse_github_url(""), None);
+    }
+
+    #[test]
+    fn test_parse_github_url_github_only() {
+        // Edge case: URL contains github.com but no repo path
+        let url = "https://github.com/";
+        assert_eq!(parse_github_url(url), None);
+    }
+
+    #[test]
+    fn test_parse_github_url_with_nested_path() {
+        let url = "https://github.com/org/repo/subpath";
+        assert_eq!(parse_github_url(url), Some("org/repo/subpath".to_string()));
+    }
+
+    // ==================== AppMode tests ====================
+
+    #[test]
+    fn test_app_mode_equality() {
+        assert_eq!(AppMode::Normal, AppMode::Normal);
+        assert_eq!(AppMode::IssuePicker, AppMode::IssuePicker);
+        assert_ne!(AppMode::Normal, AppMode::IssuePicker);
+    }
+
+    #[test]
+    fn test_app_mode_clone() {
+        let mode = AppMode::IssuePicker;
+        let cloned = mode.clone();
+        assert_eq!(mode, cloned);
+    }
+
+    // ==================== Config integration tests ====================
+
+    #[test]
+    fn test_config_default_values() {
+        use std::path::Path;
+        let config = Config::default();
+        assert_eq!(config.worktree_dir, Path::new(".worktrees"));
+        assert_eq!(config.branch_prefix, "cctakt");
+    }
+
+    // ==================== suggest_branch_name integration ====================
+
+    #[test]
+    fn test_suggest_branch_name_integration() {
+        use cctakt::github::Issue;
+
+        let issue = Issue {
+            number: 42,
+            title: "Add feature".to_string(),
+            body: None,
+            labels: vec![],
+            state: "open".to_string(),
+            html_url: "https://github.com/test/repo/issues/42".to_string(),
+        };
+
+        let branch = suggest_branch_name(&issue, "cctakt");
+        assert!(branch.starts_with("cctakt/issue-42-"));
+        assert!(branch.contains("add"));
+        assert!(branch.contains("feature"));
+    }
+
+    #[test]
+    fn test_suggest_branch_name_with_special_chars() {
+        use cctakt::github::Issue;
+
+        let issue = Issue {
+            number: 123,
+            title: "Fix: user@email.com validation".to_string(),
+            body: None,
+            labels: vec![],
+            state: "open".to_string(),
+            html_url: "https://github.com/test/repo/issues/123".to_string(),
+        };
+
+        let branch = suggest_branch_name(&issue, "fix");
+        assert!(branch.starts_with("fix/issue-123-"));
+        // Special characters should be sanitized
+        assert!(!branch.contains('@'));
+        assert!(!branch.contains(':'));
+    }
+
+    // ==================== IssuePicker state tests ====================
+
+    #[test]
+    fn test_issue_picker_initial_state() {
+        let picker = IssuePicker::new();
+        assert!(picker.is_empty());
+    }
+
+    #[test]
+    fn test_issue_picker_set_loading() {
+        let mut picker = IssuePicker::new();
+        picker.set_loading(true);
+        // Loading state is internal, but we can verify it doesn't panic
+    }
+
+    #[test]
+    fn test_issue_picker_set_issues() {
+        use cctakt::github::Issue;
+
+        let mut picker = IssuePicker::new();
+        let issues = vec![
+            Issue {
+                number: 1,
+                title: "First issue".to_string(),
+                body: None,
+                labels: vec![],
+                state: "open".to_string(),
+                html_url: "https://github.com/test/repo/issues/1".to_string(),
+            },
+            Issue {
+                number: 2,
+                title: "Second issue".to_string(),
+                body: None,
+                labels: vec![],
+                state: "open".to_string(),
+                html_url: "https://github.com/test/repo/issues/2".to_string(),
+            },
+        ];
+
+        picker.set_issues(issues);
+        assert!(!picker.is_empty());
+    }
+
+    #[test]
+    fn test_issue_picker_navigation() {
+        use cctakt::github::Issue;
+        use crossterm::event::KeyCode;
+
+        let mut picker = IssuePicker::new();
+        let issues = vec![
+            Issue {
+                number: 1,
+                title: "First".to_string(),
+                body: None,
+                labels: vec![],
+                state: "open".to_string(),
+                html_url: "https://github.com/test/repo/issues/1".to_string(),
+            },
+            Issue {
+                number: 2,
+                title: "Second".to_string(),
+                body: None,
+                labels: vec![],
+                state: "open".to_string(),
+                html_url: "https://github.com/test/repo/issues/2".to_string(),
+            },
+        ];
+        picker.set_issues(issues);
+
+        // Navigate down
+        let result = picker.handle_key(KeyCode::Down);
+        assert!(result.is_none()); // Navigation doesn't return result
+
+        // Navigate up
+        let result = picker.handle_key(KeyCode::Up);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_issue_picker_cancel() {
+        use crossterm::event::KeyCode;
+
+        let mut picker = IssuePicker::new();
+        let result = picker.handle_key(KeyCode::Esc);
+
+        assert!(matches!(result, Some(IssuePickerResult::Cancel)));
+    }
+
+    #[test]
+    fn test_issue_picker_refresh() {
+        use crossterm::event::KeyCode;
+
+        let mut picker = IssuePicker::new();
+        let result = picker.handle_key(KeyCode::Char('r'));
+
+        assert!(matches!(result, Some(IssuePickerResult::Refresh)));
+    }
+
+    #[test]
+    fn test_issue_picker_select_empty() {
+        use crossterm::event::KeyCode;
+
+        let mut picker = IssuePicker::new();
+        // Trying to select from empty list should do nothing (no panic)
+        let result = picker.handle_key(KeyCode::Enter);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_issue_picker_select_with_issues() {
+        use cctakt::github::Issue;
+        use crossterm::event::KeyCode;
+
+        let mut picker = IssuePicker::new();
+        picker.set_issues(vec![Issue {
+            number: 42,
+            title: "Test issue".to_string(),
+            body: Some("Body".to_string()),
+            labels: vec![],
+            state: "open".to_string(),
+            html_url: "https://github.com/test/repo/issues/42".to_string(),
+        }]);
+
+        let result = picker.handle_key(KeyCode::Enter);
+
+        match result {
+            Some(IssuePickerResult::Selected(issue)) => {
+                assert_eq!(issue.number, 42);
+                assert_eq!(issue.title, "Test issue");
+            }
+            _ => panic!("Expected Selected result"),
+        }
+    }
+
+    // ==================== WorktreeManager tests ====================
+
+    #[test]
+    fn test_worktree_manager_from_current_dir() {
+        // This test verifies WorktreeManager can be created from the current git repo
+        let result = WorktreeManager::from_current_dir();
+        // Should succeed since we're in a git repo
+        assert!(result.is_ok());
+    }
+
+    // ==================== GitHubClient tests ====================
+
+    #[test]
+    fn test_github_client_creation() {
+        let client = GitHubClient::with_token("owner/repo", None);
+        assert_eq!(client.repository(), "owner/repo");
+        assert!(!client.has_auth());
+    }
+
+    #[test]
+    fn test_github_client_with_auth() {
+        let client = GitHubClient::with_token("owner/repo", Some("token".to_string()));
+        assert!(client.has_auth());
     }
 }
