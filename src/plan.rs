@@ -1077,3 +1077,340 @@ mod tests {
         assert_eq!(n1.error, Some("Test error".to_string()));
     }
 }
+
+// ==================== Property-based tests ====================
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // ==================== Strategies ====================
+
+    /// Generate arbitrary TaskStatus
+    fn arb_task_status() -> impl Strategy<Value = TaskStatus> {
+        prop_oneof![
+            Just(TaskStatus::Pending),
+            Just(TaskStatus::Running),
+            Just(TaskStatus::Completed),
+            Just(TaskStatus::Failed),
+            Just(TaskStatus::Skipped),
+        ]
+    }
+
+    /// Generate arbitrary NotifyLevel
+    fn arb_notify_level() -> impl Strategy<Value = NotifyLevel> {
+        prop_oneof![
+            Just(NotifyLevel::Info),
+            Just(NotifyLevel::Warning),
+            Just(NotifyLevel::Error),
+            Just(NotifyLevel::Success),
+        ]
+    }
+
+    /// Generate arbitrary TaskResult
+    fn arb_task_result() -> impl Strategy<Value = TaskResult> {
+        (
+            prop::collection::vec("[a-z0-9]{7} .{1,50}", 0..5),
+            prop::option::of(1u64..10000),
+            prop::option::of("https://github\\.com/[a-z]+/[a-z]+/pull/[0-9]+"),
+        )
+            .prop_map(|(commits, pr_number, pr_url)| TaskResult {
+                commits,
+                pr_number,
+                pr_url,
+            })
+    }
+
+    /// Generate arbitrary TaskAction
+    fn arb_task_action() -> impl Strategy<Value = TaskAction> {
+        prop_oneof![
+            ("[a-z]+/[a-z-]+", ".{1,100}", prop::option::of("[a-z]+"))
+                .prop_map(|(branch, task_description, base_branch)| {
+                    TaskAction::CreateWorker {
+                        branch,
+                        task_description,
+                        base_branch,
+                    }
+                }),
+            ("[a-z]+/[a-z-]+", ".{1,50}", prop::option::of(".{1,200}"), prop::option::of("[a-z]+"), any::<bool>())
+                .prop_map(|(branch, title, body, base, draft)| {
+                    TaskAction::CreatePr {
+                        branch,
+                        title,
+                        body,
+                        base,
+                        draft,
+                    }
+                }),
+            ("[a-z]+/[a-z-]+", prop::option::of("[a-z]+"))
+                .prop_map(|(branch, target)| TaskAction::MergeBranch { branch, target }),
+            "[a-z]+/[a-z-]+".prop_map(|worktree| TaskAction::CleanupWorktree { worktree }),
+            ("[a-z]+/[a-z-]+", "[a-z]+ [a-z]+")
+                .prop_map(|(worktree, command)| TaskAction::RunCommand { worktree, command }),
+            (".{1,100}", arb_notify_level())
+                .prop_map(|(message, level)| TaskAction::Notify { message, level }),
+        ]
+    }
+
+    /// Generate arbitrary Task
+    fn arb_task() -> impl Strategy<Value = Task> {
+        (
+            "[a-z]+-[0-9]+",
+            arb_task_action(),
+            arb_task_status(),
+            prop::option::of(".{1,100}"),
+            prop::option::of(1u64..u64::MAX),
+            prop::option::of(arb_task_result()),
+        )
+            .prop_map(|(id, action, status, error, updated_at, result)| Task {
+                id,
+                action,
+                status,
+                error,
+                updated_at,
+                result,
+            })
+    }
+
+    /// Generate arbitrary Plan
+    fn arb_plan() -> impl Strategy<Value = Plan> {
+        (
+            1u32..10,
+            any::<u64>(),
+            prop::option::of(".{1,200}"),
+            prop::collection::vec(arb_task(), 0..10),
+        )
+            .prop_map(|(version, created_at, description, tasks)| Plan {
+                version,
+                created_at,
+                description,
+                tasks,
+            })
+    }
+
+    // ==================== Roundtrip tests ====================
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100))]
+
+        #[test]
+        fn task_status_roundtrip(status in arb_task_status()) {
+            let json = serde_json::to_string(&status).unwrap();
+            let parsed: TaskStatus = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(status, parsed);
+        }
+
+        #[test]
+        fn notify_level_roundtrip(level in arb_notify_level()) {
+            let json = serde_json::to_string(&level).unwrap();
+            let parsed: NotifyLevel = serde_json::from_str(&json).unwrap();
+            // NotifyLevel doesn't derive PartialEq, check via re-serialization
+            let json2 = serde_json::to_string(&parsed).unwrap();
+            prop_assert_eq!(json, json2);
+        }
+
+        #[test]
+        fn task_result_roundtrip(result in arb_task_result()) {
+            let json = serde_json::to_string(&result).unwrap();
+            let parsed: TaskResult = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(result.commits, parsed.commits);
+            prop_assert_eq!(result.pr_number, parsed.pr_number);
+            prop_assert_eq!(result.pr_url, parsed.pr_url);
+        }
+
+        #[test]
+        fn task_action_roundtrip(action in arb_task_action()) {
+            let json = serde_json::to_string(&action).unwrap();
+            let parsed: TaskAction = serde_json::from_str(&json).unwrap();
+            // Re-serialize to verify equality
+            let json2 = serde_json::to_string(&parsed).unwrap();
+            prop_assert_eq!(json, json2);
+        }
+
+        #[test]
+        fn task_roundtrip(task in arb_task()) {
+            let json = serde_json::to_string(&task).unwrap();
+            let parsed: Task = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(task.id, parsed.id);
+            prop_assert_eq!(task.status, parsed.status);
+            prop_assert_eq!(task.error, parsed.error);
+            prop_assert_eq!(task.updated_at, parsed.updated_at);
+        }
+
+        #[test]
+        fn plan_roundtrip(plan in arb_plan()) {
+            let json = serde_json::to_string(&plan).unwrap();
+            let parsed: Plan = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(plan.version, parsed.version);
+            prop_assert_eq!(plan.created_at, parsed.created_at);
+            prop_assert_eq!(plan.description, parsed.description);
+            prop_assert_eq!(plan.tasks.len(), parsed.tasks.len());
+        }
+    }
+
+    // ==================== Invariant tests ====================
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100))]
+
+        /// count_by_status should always sum to total tasks
+        #[test]
+        fn count_by_status_sum_equals_total(plan in arb_plan()) {
+            let (pending, running, completed, failed) = plan.count_by_status();
+            let skipped = plan.tasks.iter().filter(|t| t.status == TaskStatus::Skipped).count();
+            prop_assert_eq!(pending + running + completed + failed + skipped, plan.tasks.len());
+        }
+
+        /// is_complete should be true iff no pending/running tasks
+        #[test]
+        fn is_complete_consistency(plan in arb_plan()) {
+            let has_pending_or_running = plan.tasks.iter().any(|t| {
+                matches!(t.status, TaskStatus::Pending | TaskStatus::Running)
+            });
+            prop_assert_eq!(plan.is_complete(), !has_pending_or_running);
+        }
+
+        /// next_pending should return first pending task
+        #[test]
+        fn next_pending_returns_first(plan in arb_plan()) {
+            let first_pending = plan.tasks.iter().find(|t| t.status == TaskStatus::Pending);
+            let next = plan.next_pending();
+            match (first_pending, next) {
+                (Some(expected), Some(actual)) => prop_assert_eq!(&expected.id, &actual.id),
+                (None, None) => (),
+                _ => prop_assert!(false, "next_pending mismatch"),
+            }
+        }
+
+        /// get_task should find existing task and return None for missing
+        #[test]
+        fn get_task_finds_existing(plan in arb_plan(), idx in any::<prop::sample::Index>()) {
+            if !plan.tasks.is_empty() {
+                let task = idx.get(&plan.tasks);
+                let found = plan.get_task(&task.id);
+                prop_assert!(found.is_some());
+                prop_assert_eq!(&found.unwrap().id, &task.id);
+            }
+            // Non-existent ID should return None
+            prop_assert!(plan.get_task("definitely-not-exists-xyz123").is_none());
+        }
+    }
+
+    // ==================== Mutation tests ====================
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(50))]
+
+        /// update_status should change status and set timestamp
+        #[test]
+        fn update_status_changes_task(
+            mut plan in arb_plan(),
+            idx in any::<prop::sample::Index>(),
+            new_status in arb_task_status()
+        ) {
+            if !plan.tasks.is_empty() {
+                let task_id = idx.get(&plan.tasks).id.clone();
+                let result = plan.update_status(&task_id, new_status.clone());
+                prop_assert!(result);
+                let task = plan.get_task(&task_id).unwrap();
+                prop_assert_eq!(task.status.clone(), new_status);
+                prop_assert!(task.updated_at.is_some());
+            }
+        }
+
+        /// mark_failed should set status to Failed and add error
+        #[test]
+        fn mark_failed_sets_error(
+            mut plan in arb_plan(),
+            idx in any::<prop::sample::Index>(),
+            error_msg in ".{1,100}"
+        ) {
+            if !plan.tasks.is_empty() {
+                let task_id = idx.get(&plan.tasks).id.clone();
+                let result = plan.mark_failed(&task_id, &error_msg);
+                prop_assert!(result);
+                let task = plan.get_task(&task_id).unwrap();
+                prop_assert_eq!(task.status.clone(), TaskStatus::Failed);
+                prop_assert_eq!(task.error.as_ref().unwrap(), &error_msg);
+            }
+        }
+
+        /// mark_completed should set status to Completed and add result
+        #[test]
+        fn mark_completed_sets_result(
+            mut plan in arb_plan(),
+            idx in any::<prop::sample::Index>(),
+            result in arb_task_result()
+        ) {
+            if !plan.tasks.is_empty() {
+                let task_id = idx.get(&plan.tasks).id.clone();
+                let commits_count = result.commits.len();
+                let success = plan.mark_completed(&task_id, result);
+                prop_assert!(success);
+                let task = plan.get_task(&task_id).unwrap();
+                prop_assert_eq!(task.status.clone(), TaskStatus::Completed);
+                prop_assert!(task.result.is_some());
+                prop_assert_eq!(task.result.as_ref().unwrap().commits.len(), commits_count);
+            }
+        }
+
+        /// add_task should increase task count
+        #[test]
+        fn add_task_increases_count(mut plan in arb_plan(), task in arb_task()) {
+            let initial_count = plan.tasks.len();
+            plan.add_task(task);
+            prop_assert_eq!(plan.tasks.len(), initial_count + 1);
+        }
+    }
+
+    // ==================== Edge case tests ====================
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(50))]
+
+        /// Operations on non-existent task should return false
+        #[test]
+        fn operations_on_missing_task_fail(
+            mut plan in arb_plan(),
+            status in arb_task_status(),
+            result in arb_task_result()
+        ) {
+            let fake_id = "definitely-missing-task-xyz789";
+            prop_assert!(!plan.update_status(fake_id, status));
+            prop_assert!(!plan.mark_failed(fake_id, "error"));
+            prop_assert!(!plan.mark_completed(fake_id, result));
+        }
+
+        /// Empty plan is always complete
+        #[test]
+        fn empty_plan_always_complete(description in prop::option::of(".{1,100}")) {
+            let plan = Plan {
+                version: 1,
+                created_at: 0,
+                description,
+                tasks: vec![],
+            };
+            prop_assert!(plan.is_complete());
+            let (p, r, c, f) = plan.count_by_status();
+            prop_assert_eq!((p, r, c, f), (0, 0, 0, 0));
+        }
+
+        /// Plan with all terminal statuses is complete
+        #[test]
+        fn terminal_status_plan_complete(tasks_count in 1usize..10) {
+            let mut plan = Plan::new();
+            for i in 0..tasks_count {
+                let mut task = Task::notify(format!("t-{}", i), "Test");
+                // Randomly assign terminal status
+                task.status = match i % 3 {
+                    0 => TaskStatus::Completed,
+                    1 => TaskStatus::Failed,
+                    _ => TaskStatus::Skipped,
+                };
+                plan.add_task(task);
+            }
+            prop_assert!(plan.is_complete());
+        }
+    }
+}
