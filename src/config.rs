@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 const CONFIG_FILE_NAME: &str = ".cctakt.toml";
 
 /// Main configuration structure
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Base directory for creating worktrees
     #[serde(default = "default_worktree_dir")]
@@ -28,6 +28,17 @@ pub struct Config {
     /// Keybinding configuration
     #[serde(default)]
     pub keybindings: KeyBindings,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            worktree_dir: default_worktree_dir(),
+            branch_prefix: default_branch_prefix(),
+            github: GitHubConfig::default(),
+            keybindings: KeyBindings::default(),
+        }
+    }
 }
 
 /// GitHub-related configuration

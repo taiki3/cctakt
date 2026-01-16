@@ -103,11 +103,7 @@ impl IssuePicker {
                 None
             }
             KeyCode::Enter => {
-                if let Some(issue) = self.selected().cloned() {
-                    Some(IssuePickerResult::Selected(issue))
-                } else {
-                    None
-                }
+                self.selected().cloned().map(IssuePickerResult::Selected)
             }
             KeyCode::Esc | KeyCode::Char('q') => Some(IssuePickerResult::Cancel),
             KeyCode::Char('r') => Some(IssuePickerResult::Refresh),
@@ -179,7 +175,7 @@ impl IssuePicker {
 
         // Handle error state
         if let Some(ref error) = self.error {
-            let error_text = Paragraph::new(format!("Error: {}", error))
+            let error_text = Paragraph::new(format!("Error: {error}"))
                 .style(Style::default().fg(Color::Red));
             f.render_widget(error_text, inner_area);
             return;

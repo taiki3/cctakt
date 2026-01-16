@@ -109,7 +109,7 @@ impl GitHubClient {
             .set("User-Agent", "cctakt");
 
         if let Some(ref token) = self.token {
-            request = request.set("Authorization", &format!("Bearer {}", token));
+            request = request.set("Authorization", &format!("Bearer {token}"));
         }
 
         request
@@ -160,7 +160,7 @@ impl GitHubClient {
         let request = self.build_request(&url);
         let response = request
             .call()
-            .with_context(|| format!("Failed to fetch issue #{}", number))?;
+            .with_context(|| format!("Failed to fetch issue #{number}"))?;
 
         let issue: Issue = response
             .into_json()
@@ -182,9 +182,9 @@ impl GitHubClient {
         let response = ureq::post(&url)
             .set("Accept", "application/vnd.github.v3+json")
             .set("User-Agent", "cctakt")
-            .set("Authorization", &format!("Bearer {}", token))
+            .set("Authorization", &format!("Bearer {token}"))
             .send_json(ureq::json!({ "body": body }))
-            .with_context(|| format!("Failed to add comment to issue #{}", number))?;
+            .with_context(|| format!("Failed to add comment to issue #{number}"))?;
 
         if response.status() != 201 {
             return Err(anyhow!(
@@ -209,9 +209,9 @@ impl GitHubClient {
         let response = ureq::patch(&url)
             .set("Accept", "application/vnd.github.v3+json")
             .set("User-Agent", "cctakt")
-            .set("Authorization", &format!("Bearer {}", token))
+            .set("Authorization", &format!("Bearer {token}"))
             .send_json(ureq::json!({ "state": "closed" }))
-            .with_context(|| format!("Failed to close issue #{}", number))?;
+            .with_context(|| format!("Failed to close issue #{number}"))?;
 
         if response.status() != 200 {
             return Err(anyhow!(
