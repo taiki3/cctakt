@@ -5,6 +5,9 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use mockall::automock;
+
 /// Default model to use
 pub const DEFAULT_MODEL: &str = "claude-sonnet-4-20250514";
 
@@ -12,7 +15,7 @@ pub const DEFAULT_MODEL: &str = "claude-sonnet-4-20250514";
 pub const DEFAULT_MAX_TOKENS: u32 = 1024;
 
 /// Anthropic API client
-pub struct AnthropicClient {
+pub struct AnthropicClient<H: HttpClient = UreqHttpClient> {
     /// API key
     api_key: String,
 
@@ -21,6 +24,9 @@ pub struct AnthropicClient {
 
     /// Max tokens for response
     max_tokens: u32,
+
+    /// HTTP client
+    http: H,
 }
 
 /// Message role
@@ -85,7 +91,38 @@ pub struct CompletionResult {
     pub stop_reason: Option<String>,
 }
 
-impl AnthropicClient {
+/// HTTP response abstraction
+#[derive(Debug, Clone)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub body: String,
+}
+
+/// Trait for HTTP operations (allows mocking)
+#[cfg_attr(test, automock)]
+pub trait HttpClient: Send + Sync {
+    /// Send a POST request with JSON body
+    fn post(&self, url: &str, headers: Vec<(String, String)>, body: String) -> Result<HttpResponse>;
+}
+
+/// Real HTTP client using ureq
+#[derive(Default)]
+pub struct UreqHttpClient;
+
+impl HttpClient for UreqHttpClient {
+    fn post(&self, url: &str, headers: Vec<(String, String)>, body: String) -> Result<HttpResponse> {
+        let mut request = ureq::post(url);
+        for (key, value) in &headers {
+            request = request.set(key, value);
+        }
+        let response = request.send_string(&body).context("HTTP POST failed")?;
+        let status = response.status();
+        let body = response.into_string().context("Failed to read response body")?;
+        Ok(HttpResponse { status, body })
+    }
+}
+
+impl AnthropicClient<UreqHttpClient> {
     /// Create a new client
     ///
     /// API key is obtained from:
@@ -104,6 +141,7 @@ impl AnthropicClient {
             api_key: key,
             model: DEFAULT_MODEL.to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
+            http: UreqHttpClient,
         })
     }
 
@@ -113,6 +151,19 @@ impl AnthropicClient {
             api_key,
             model,
             max_tokens,
+            http: UreqHttpClient,
+        }
+    }
+}
+
+impl<H: HttpClient> AnthropicClient<H> {
+    /// Create client with custom HTTP client (for testing)
+    pub fn with_http_client(api_key: String, model: String, max_tokens: u32, http: H) -> Self {
+        Self {
+            api_key,
+            model,
+            max_tokens,
+            http,
         }
     }
 
@@ -124,6 +175,16 @@ impl AnthropicClient {
     /// Set max tokens
     pub fn set_max_tokens(&mut self, max_tokens: u32) {
         self.max_tokens = max_tokens;
+    }
+
+    /// Get model name
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Get max tokens
+    pub fn max_tokens(&self) -> u32 {
+        self.max_tokens
     }
 
     /// Send a simple message and get a response
@@ -158,22 +219,26 @@ impl AnthropicClient {
             system: system.map(String::from),
         };
 
-        let response = ureq::post("https://api.anthropic.com/v1/messages")
-            .set("Content-Type", "application/json")
-            .set("x-api-key", &self.api_key)
-            .set("anthropic-version", "2023-06-01")
-            .send_json(&request)
+        let headers = vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("x-api-key".to_string(), self.api_key.clone()),
+            ("anthropic-version".to_string(), "2023-06-01".to_string()),
+        ];
+
+        let body = serde_json::to_string(&request)
+            .context("Failed to serialize request")?;
+
+        let response = self.http.post("https://api.anthropic.com/v1/messages", headers, body)
             .context("Failed to send request to Anthropic API")?;
 
-        if response.status() != 200 {
+        if response.status != 200 {
             return Err(anyhow!(
                 "Anthropic API error: HTTP {}",
-                response.status()
+                response.status
             ));
         }
 
-        let response: MessagesResponse = response
-            .into_json()
+        let response: MessagesResponse = serde_json::from_str(&response.body)
             .context("Failed to parse Anthropic API response")?;
 
         // Extract text from content blocks
@@ -383,5 +448,405 @@ mod integration_tests {
             .unwrap();
 
         assert!(!result.is_empty());
+    }
+}
+
+// Mock-based tests for Anthropic API
+#[cfg(test)]
+mod mock_tests {
+    use super::*;
+
+    fn mock_response_json(text: &str) -> String {
+        format!(
+            r#"{{
+                "content": [{{"type": "text", "text": "{text}"}}],
+                "model": "claude-sonnet-4-20250514",
+                "stop_reason": "end_turn",
+                "usage": {{"input_tokens": 100, "output_tokens": 50}}
+            }}"#
+        )
+    }
+
+    #[test]
+    fn test_complete_with_mock() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .withf(|url: &str, _, _: &String| url.contains("api.anthropic.com"))
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 200,
+                body: mock_response_json("Hello!"),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let result = client.complete("Say hello").unwrap();
+
+        assert_eq!(result.text, "Hello!");
+        assert_eq!(result.usage.input_tokens, 100);
+        assert_eq!(result.usage.output_tokens, 50);
+    }
+
+    #[test]
+    fn test_complete_with_system_prompt() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .withf(|_, _, body: &String| body.contains("system"))
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 200,
+                body: mock_response_json("Response with system"),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let result = client.complete_with_system("Test", Some("Be helpful")).unwrap();
+
+        assert_eq!(result.text, "Response with system");
+    }
+
+    #[test]
+    fn test_send_messages() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 200,
+                body: mock_response_json("Multi-turn response"),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+
+        let messages = vec![
+            Message { role: Role::User, content: "Hello".to_string() },
+            Message { role: Role::Assistant, content: "Hi!".to_string() },
+            Message { role: Role::User, content: "How are you?".to_string() },
+        ];
+        let result = client.send_messages(&messages, None).unwrap();
+
+        assert_eq!(result.text, "Multi-turn response");
+    }
+
+    #[test]
+    fn test_http_error() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 500,
+                body: "Internal Server Error".to_string(),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let result = client.complete("Test");
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("HTTP 500"));
+    }
+
+    #[test]
+    fn test_network_error() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .returning(|_, _, _| Err(anyhow!("Network error")));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let result = client.complete("Test");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_json_parse_error() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 200,
+                body: "invalid json".to_string(),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let result = client.complete("Test");
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("parse"));
+    }
+
+    #[test]
+    fn test_generate_pr_description_with_mock() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .withf(|_, _, body: &String| {
+                body.contains("pull request") || body.contains("Issue")
+            })
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 200,
+                body: mock_response_json("This PR adds authentication feature."),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let result = client.generate_pr_description(
+            "Add auth",
+            Some("Auth feature"),
+            "abc123 feat: auth",
+            "3 files changed",
+        ).unwrap();
+
+        assert!(result.contains("authentication"));
+    }
+
+    #[test]
+    fn test_generate_pr_description_without_body() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 200,
+                body: mock_response_json("PR description"),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let result = client.generate_pr_description(
+            "Fix bug",
+            None,
+            "abc123 fix: bug",
+            "1 file changed",
+        ).unwrap();
+
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_generate_commit_message_with_mock() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 200,
+                body: mock_response_json("feat: add new feature"),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let result = client.generate_commit_message(
+            "+fn new_feature() {}",
+            Some("Adding feature"),
+        ).unwrap();
+
+        assert!(result.contains("feat"));
+    }
+
+    #[test]
+    fn test_generate_commit_message_without_context() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 200,
+                body: mock_response_json("fix: resolve issue"),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let result = client.generate_commit_message("-bug\n+fix", None).unwrap();
+
+        assert!(result.contains("fix"));
+    }
+
+    #[test]
+    fn test_headers_include_api_key() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .withf(|_, headers: &Vec<(String, String)>, _: &String| {
+                headers.iter().any(|(k, v)| k == "x-api-key" && v == "test-key")
+            })
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 200,
+                body: mock_response_json("OK"),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let _ = client.complete("Test");
+    }
+
+    #[test]
+    fn test_headers_include_version() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .withf(|_, headers: &Vec<(String, String)>, _: &String| {
+                headers.iter().any(|(k, v)| k == "anthropic-version" && v == "2023-06-01")
+            })
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 200,
+                body: mock_response_json("OK"),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let _ = client.complete("Test");
+    }
+
+    #[test]
+    fn test_model_accessor() {
+        let mock = MockHttpClient::new();
+        let client = AnthropicClient::with_http_client(
+            "key".to_string(),
+            "test-model".to_string(),
+            2048,
+            mock,
+        );
+        assert_eq!(client.model(), "test-model");
+    }
+
+    #[test]
+    fn test_max_tokens_accessor() {
+        let mock = MockHttpClient::new();
+        let client = AnthropicClient::with_http_client(
+            "key".to_string(),
+            "model".to_string(),
+            4096,
+            mock,
+        );
+        assert_eq!(client.max_tokens(), 4096);
+    }
+
+    #[test]
+    fn test_set_model_generic() {
+        let mock = MockHttpClient::new();
+        let mut client = AnthropicClient::with_http_client(
+            "key".to_string(),
+            "model1".to_string(),
+            1024,
+            mock,
+        );
+        client.set_model("model2");
+        assert_eq!(client.model(), "model2");
+    }
+
+    #[test]
+    fn test_set_max_tokens_generic() {
+        let mock = MockHttpClient::new();
+        let mut client = AnthropicClient::with_http_client(
+            "key".to_string(),
+            "model".to_string(),
+            1024,
+            mock,
+        );
+        client.set_max_tokens(2048);
+        assert_eq!(client.max_tokens(), 2048);
+    }
+
+    #[test]
+    fn test_http_response_struct() {
+        let response = HttpResponse {
+            status: 200,
+            body: "test body".to_string(),
+        };
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, "test body");
+    }
+
+    #[test]
+    fn test_multiple_content_blocks() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 200,
+                body: r#"{
+                    "content": [
+                        {"type": "text", "text": "Hello "},
+                        {"type": "text", "text": "World!"}
+                    ],
+                    "model": "claude-sonnet-4-20250514",
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 10, "output_tokens": 5}
+                }"#.to_string(),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let result = client.complete("Test").unwrap();
+
+        assert_eq!(result.text, "Hello World!");
+    }
+
+    #[test]
+    fn test_non_text_content_block_filtered() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post()
+            .returning(|_, _, _| Ok(HttpResponse {
+                status: 200,
+                body: r#"{
+                    "content": [
+                        {"type": "image", "text": null},
+                        {"type": "text", "text": "Only text"}
+                    ],
+                    "model": "claude-sonnet-4-20250514",
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 10, "output_tokens": 5}
+                }"#.to_string(),
+            }));
+
+        let client = AnthropicClient::with_http_client(
+            "test-key".to_string(),
+            DEFAULT_MODEL.to_string(),
+            1024,
+            mock,
+        );
+        let result = client.complete("Test").unwrap();
+
+        assert_eq!(result.text, "Only text");
     }
 }

@@ -250,3 +250,141 @@ impl Default for AgentManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== AgentStatus tests ====================
+
+    #[test]
+    fn test_agent_status_running() {
+        let status = AgentStatus::Running;
+        assert_eq!(status, AgentStatus::Running);
+    }
+
+    #[test]
+    fn test_agent_status_ended() {
+        let status = AgentStatus::Ended;
+        assert_eq!(status, AgentStatus::Ended);
+    }
+
+    #[test]
+    fn test_agent_status_copy() {
+        let status = AgentStatus::Running;
+        let copied = status;
+        assert_eq!(status, copied);
+    }
+
+    #[test]
+    fn test_agent_status_clone() {
+        let status = AgentStatus::Ended;
+        let cloned = status.clone();
+        assert_eq!(status, cloned);
+    }
+
+    #[test]
+    fn test_agent_status_debug() {
+        let status = AgentStatus::Running;
+        let debug_str = format!("{:?}", status);
+        assert!(debug_str.contains("Running"));
+    }
+
+    // ==================== AgentManager tests ====================
+
+    #[test]
+    fn test_agent_manager_new() {
+        let manager = AgentManager::new();
+        assert!(manager.is_empty());
+        assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_agent_manager_default() {
+        let manager = AgentManager::default();
+        assert!(manager.is_empty());
+    }
+
+    #[test]
+    fn test_agent_manager_list_empty() {
+        let manager = AgentManager::new();
+        assert!(manager.list().is_empty());
+    }
+
+    #[test]
+    fn test_agent_manager_active_empty() {
+        let manager = AgentManager::new();
+        assert!(manager.active().is_none());
+    }
+
+    #[test]
+    fn test_agent_manager_active_mut_empty() {
+        let mut manager = AgentManager::new();
+        assert!(manager.active_mut().is_none());
+    }
+
+    #[test]
+    fn test_agent_manager_get_empty() {
+        let manager = AgentManager::new();
+        assert!(manager.get(0).is_none());
+        assert!(manager.get(100).is_none());
+    }
+
+    #[test]
+    fn test_agent_manager_get_mut_empty() {
+        let mut manager = AgentManager::new();
+        assert!(manager.get_mut(0).is_none());
+        assert!(manager.get_mut(100).is_none());
+    }
+
+    #[test]
+    fn test_agent_manager_switch_to_empty() {
+        let mut manager = AgentManager::new();
+        manager.switch_to(0);
+        assert_eq!(manager.active_index(), 0);
+        manager.switch_to(100);
+        assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_agent_manager_next_empty() {
+        let mut manager = AgentManager::new();
+        manager.next();
+        assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_agent_manager_prev_empty() {
+        let mut manager = AgentManager::new();
+        manager.prev();
+        assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_agent_manager_close_empty() {
+        let mut manager = AgentManager::new();
+        manager.close(0);
+        assert!(manager.is_empty());
+    }
+
+    #[test]
+    fn test_agent_manager_close_invalid_index() {
+        let mut manager = AgentManager::new();
+        manager.close(100);
+        assert!(manager.is_empty());
+    }
+
+    #[test]
+    fn test_agent_manager_check_all_status_empty() {
+        let mut manager = AgentManager::new();
+        manager.check_all_status();
+        assert!(manager.is_empty());
+    }
+
+    #[test]
+    fn test_agent_manager_resize_all_empty() {
+        let mut manager = AgentManager::new();
+        manager.resize_all(80, 24);
+        assert!(manager.is_empty());
+    }
+}
