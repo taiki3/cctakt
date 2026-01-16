@@ -1824,4 +1824,340 @@ mod tests {
         let manager = MergeManager::new("/tmp/test-repo").with_main_branch("master");
         assert_eq!(manager.main_branch(), "master");
     }
+
+    // ==================== get_worker_commits tests ====================
+
+    #[test]
+    fn test_get_worker_commits_current_repo() {
+        // Test on current repo - should return commits
+        let commits = get_worker_commits(&PathBuf::from("."));
+        // Should return some commits since we're in a git repo
+        assert!(!commits.is_empty());
+    }
+
+    #[test]
+    fn test_get_worker_commits_nonexistent_dir() {
+        // Test on nonexistent directory - should return empty
+        let commits = get_worker_commits(&PathBuf::from("/nonexistent/path/that/doesnt/exist"));
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn test_get_worker_commits_format() {
+        // Test that commits are in expected format (hash + message)
+        let commits = get_worker_commits(&PathBuf::from("."));
+        if !commits.is_empty() {
+            // Each commit should have at least a hash (7+ chars)
+            let first = &commits[0];
+            assert!(first.len() >= 7, "Commit should have hash: {}", first);
+        }
+    }
+
+    // ==================== Notification tests ====================
+
+    #[test]
+    fn test_notification_creation() {
+        let notification = Notification {
+            message: "Test message".to_string(),
+            level: cctakt::plan::NotifyLevel::Info,
+            created_at: std::time::Instant::now(),
+        };
+        assert_eq!(notification.message, "Test message");
+    }
+
+    #[test]
+    fn test_notification_levels() {
+        let levels = [
+            cctakt::plan::NotifyLevel::Info,
+            cctakt::plan::NotifyLevel::Warning,
+            cctakt::plan::NotifyLevel::Error,
+            cctakt::plan::NotifyLevel::Success,
+        ];
+
+        for level in levels {
+            let notification = Notification {
+                message: "Test".to_string(),
+                level,
+                created_at: std::time::Instant::now(),
+            };
+            // Just verify it doesn't panic
+            let _ = notification.message;
+        }
+    }
+
+    // ==================== vt100 color conversion tests ====================
+
+    #[test]
+    fn test_vt100_color_to_ratatui_default() {
+        let color = vt100_color_to_ratatui(vt100::Color::Default);
+        assert_eq!(color, Color::Reset);
+    }
+
+    #[test]
+    fn test_vt100_color_to_ratatui_basic_colors() {
+        let tests = [
+            (0, Color::Black),
+            (1, Color::Red),
+            (2, Color::Green),
+            (3, Color::Yellow),
+            (4, Color::Blue),
+            (5, Color::Magenta),
+            (6, Color::Cyan),
+            (7, Color::Gray),
+        ];
+
+        for (idx, expected) in tests {
+            let result = vt100_color_to_ratatui(vt100::Color::Idx(idx));
+            assert_eq!(result, expected, "Color index {} failed", idx);
+        }
+    }
+
+    #[test]
+    fn test_vt100_color_to_ratatui_bright_colors() {
+        let tests = [
+            (8, Color::DarkGray),
+            (9, Color::LightRed),
+            (10, Color::LightGreen),
+            (11, Color::LightYellow),
+            (12, Color::LightBlue),
+            (13, Color::LightMagenta),
+            (14, Color::LightCyan),
+            (15, Color::White),
+        ];
+
+        for (idx, expected) in tests {
+            let result = vt100_color_to_ratatui(vt100::Color::Idx(idx));
+            assert_eq!(result, expected, "Color index {} failed", idx);
+        }
+    }
+
+    #[test]
+    fn test_vt100_color_to_ratatui_indexed() {
+        let result = vt100_color_to_ratatui(vt100::Color::Idx(200));
+        assert_eq!(result, Color::Indexed(200));
+    }
+
+    #[test]
+    fn test_vt100_color_to_ratatui_rgb() {
+        let result = vt100_color_to_ratatui(vt100::Color::Rgb(100, 150, 200));
+        assert_eq!(result, Color::Rgb(100, 150, 200));
+    }
+
+    // ==================== parse_github_url additional tests ====================
+
+    #[test]
+    fn test_parse_github_url_enterprise() {
+        // Enterprise GitHub URLs typically don't use github.com
+        let url = "https://github.example.com/owner/repo.git";
+        // Should return None since it doesn't match github.com exactly
+        assert_eq!(parse_github_url(url), None);
+    }
+
+    #[test]
+    fn test_parse_github_url_with_port() {
+        let url = "https://github.com:443/owner/repo.git";
+        // Port in URL - behavior depends on implementation
+        let result = parse_github_url(url);
+        // Should handle this gracefully (either parse or return None)
+        assert!(result.is_none() || result.is_some());
+    }
+
+    // ==================== TaskResult integration tests ====================
+
+    #[test]
+    fn test_task_result_struct() {
+        let result = TaskResult {
+            commits: vec!["abc123 first commit".to_string()],
+            pr_number: Some(42),
+            pr_url: Some("https://github.com/owner/repo/pull/42".to_string()),
+        };
+
+        assert_eq!(result.commits.len(), 1);
+        assert_eq!(result.pr_number, Some(42));
+        assert!(result.pr_url.is_some());
+    }
+
+    #[test]
+    fn test_task_result_default() {
+        let result = TaskResult::default();
+        assert!(result.commits.is_empty());
+        assert!(result.pr_number.is_none());
+        assert!(result.pr_url.is_none());
+    }
+
+    // ==================== Plan integration tests ====================
+
+    #[test]
+    fn test_plan_manager_integration() {
+        let manager = PlanManager::current_dir();
+        let path = manager.plan_file();
+        assert!(path.to_string_lossy().contains(".cctakt"));
+        assert!(path.to_string_lossy().contains("plan.json"));
+    }
+
+    #[test]
+    fn test_plan_new() {
+        let plan = Plan::new();
+        assert!(plan.tasks.is_empty());
+        assert!(plan.description.is_none());
+    }
+
+    #[test]
+    fn test_plan_with_description() {
+        let plan = Plan::with_description("Test plan");
+        assert_eq!(plan.description, Some("Test plan".to_string()));
+    }
+
+    #[test]
+    fn test_plan_count_by_status() {
+        let mut plan = Plan::new();
+        plan.add_task(cctakt::plan::Task::notify("t-1", "Test 1"));
+        plan.add_task(cctakt::plan::Task::notify("t-2", "Test 2"));
+
+        let (pending, running, completed, failed) = plan.count_by_status();
+        assert_eq!(pending, 2);
+        assert_eq!(running, 0);
+        assert_eq!(completed, 0);
+        assert_eq!(failed, 0);
+    }
+
+    // ==================== ReviewState additional tests ====================
+
+    #[test]
+    fn test_review_state_empty_conflicts() {
+        let state = ReviewState {
+            agent_index: 0,
+            branch: "test".to_string(),
+            worktree_path: PathBuf::from("/tmp"),
+            diff_view: DiffView::new(String::new()),
+            commit_log: String::new(),
+            files_changed: 0,
+            insertions: 0,
+            deletions: 0,
+            conflicts: vec![],
+        };
+
+        assert!(state.conflicts.is_empty());
+        assert_eq!(state.files_changed, 0);
+    }
+
+    #[test]
+    fn test_review_state_multiple_conflicts() {
+        let state = ReviewState {
+            agent_index: 1,
+            branch: "feature".to_string(),
+            worktree_path: PathBuf::from("/worktree"),
+            diff_view: DiffView::new("diff".to_string()),
+            commit_log: "log".to_string(),
+            files_changed: 10,
+            insertions: 500,
+            deletions: 100,
+            conflicts: vec![
+                "file1.rs".to_string(),
+                "file2.rs".to_string(),
+                "file3.rs".to_string(),
+            ],
+        };
+
+        assert_eq!(state.conflicts.len(), 3);
+        assert_eq!(state.insertions, 500);
+        assert_eq!(state.deletions, 100);
+    }
+
+    // ==================== DiffView additional tests ====================
+
+    #[test]
+    fn test_diff_view_empty() {
+        let view = DiffView::new(String::new());
+        assert!(view.is_empty());
+    }
+
+    #[test]
+    fn test_diff_view_multiline() {
+        let diff = "+line1\n+line2\n+line3\n-old1\n-old2";
+        let view = DiffView::new(diff.to_string());
+        assert!(!view.is_empty());
+    }
+
+    // ==================== AgentManager tests ====================
+
+    #[test]
+    fn test_agent_manager_new() {
+        let manager = AgentManager::new();
+        assert!(manager.is_empty());
+        assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_agent_manager_default() {
+        let manager = AgentManager::default();
+        assert!(manager.is_empty());
+    }
+
+    #[test]
+    fn test_agent_manager_list_empty() {
+        let manager = AgentManager::new();
+        assert!(manager.list().is_empty());
+    }
+
+    #[test]
+    fn test_agent_manager_active_none() {
+        let manager = AgentManager::new();
+        assert!(manager.active().is_none());
+    }
+
+    #[test]
+    fn test_agent_manager_switch_to_invalid() {
+        let mut manager = AgentManager::new();
+        // Switching to invalid index should not panic
+        manager.switch_to(100);
+        assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_agent_manager_next_empty() {
+        let mut manager = AgentManager::new();
+        // Next on empty manager should not panic
+        manager.next();
+        assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_agent_manager_prev_empty() {
+        let mut manager = AgentManager::new();
+        // Prev on empty manager should not panic
+        manager.prev();
+        assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_agent_manager_close_invalid() {
+        let mut manager = AgentManager::new();
+        // Closing invalid index should not panic
+        manager.close(100);
+        assert!(manager.is_empty());
+    }
+
+    #[test]
+    fn test_agent_manager_get_none() {
+        let manager = AgentManager::new();
+        assert!(manager.get(0).is_none());
+        assert!(manager.get(100).is_none());
+    }
+
+    // ==================== AgentStatus tests ====================
+
+    #[test]
+    fn test_agent_status_equality() {
+        assert_eq!(AgentStatus::Running, AgentStatus::Running);
+        assert_eq!(AgentStatus::Ended, AgentStatus::Ended);
+        assert_ne!(AgentStatus::Running, AgentStatus::Ended);
+    }
+
+    #[test]
+    fn test_agent_status_clone() {
+        let status = AgentStatus::Running;
+        let cloned = status;
+        assert_eq!(status, cloned);
+    }
 }

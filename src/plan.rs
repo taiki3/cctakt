@@ -684,4 +684,396 @@ mod tests {
             _ => panic!("Wrong action type"),
         }
     }
+
+    // ==================== TaskResult tests ====================
+
+    #[test]
+    fn test_task_result_default() {
+        let result = TaskResult::default();
+        assert!(result.commits.is_empty());
+        assert!(result.pr_number.is_none());
+        assert!(result.pr_url.is_none());
+    }
+
+    #[test]
+    fn test_task_result_with_commits() {
+        let result = TaskResult {
+            commits: vec![
+                "abc1234 feat: add feature".to_string(),
+                "def5678 fix: bug fix".to_string(),
+            ],
+            pr_number: None,
+            pr_url: None,
+        };
+        assert_eq!(result.commits.len(), 2);
+        assert!(result.commits[0].contains("abc1234"));
+    }
+
+    #[test]
+    fn test_task_result_with_pr() {
+        let result = TaskResult {
+            commits: Vec::new(),
+            pr_number: Some(42),
+            pr_url: Some("https://github.com/owner/repo/pull/42".to_string()),
+        };
+        assert_eq!(result.pr_number, Some(42));
+        assert!(result.pr_url.as_ref().unwrap().contains("pull/42"));
+    }
+
+    #[test]
+    fn test_task_result_serialize() {
+        let result = TaskResult {
+            commits: vec!["abc1234 test commit".to_string()],
+            pr_number: Some(123),
+            pr_url: Some("https://example.com/pr/123".to_string()),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"commits\""));
+        assert!(json.contains("abc1234"));
+        assert!(json.contains("\"pr_number\":123"));
+    }
+
+    #[test]
+    fn test_task_result_deserialize() {
+        let json = r#"{
+            "commits": ["abc1234 first", "def5678 second"],
+            "pr_number": 99,
+            "pr_url": "https://github.com/test/repo/pull/99"
+        }"#;
+        let result: TaskResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.commits.len(), 2);
+        assert_eq!(result.pr_number, Some(99));
+    }
+
+    #[test]
+    fn test_task_result_deserialize_partial() {
+        // Test that missing fields use defaults
+        let json = r#"{"commits": ["abc123 test"]}"#;
+        let result: TaskResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.commits.len(), 1);
+        assert!(result.pr_number.is_none());
+        assert!(result.pr_url.is_none());
+    }
+
+    #[test]
+    fn test_task_result_deserialize_empty() {
+        let json = "{}";
+        let result: TaskResult = serde_json::from_str(json).unwrap();
+        assert!(result.commits.is_empty());
+    }
+
+    // ==================== mark_completed tests ====================
+
+    #[test]
+    fn test_plan_mark_completed() {
+        let mut plan = Plan::new();
+        plan.add_task(Task::notify("t-1", "Test"));
+
+        let result = TaskResult {
+            commits: vec!["abc123 test".to_string()],
+            pr_number: None,
+            pr_url: None,
+        };
+
+        assert!(plan.mark_completed("t-1", result));
+        let task = plan.get_task("t-1").unwrap();
+        assert_eq!(task.status, TaskStatus::Completed);
+        assert!(task.result.is_some());
+        assert_eq!(task.result.as_ref().unwrap().commits.len(), 1);
+    }
+
+    #[test]
+    fn test_plan_mark_completed_nonexistent() {
+        let mut plan = Plan::new();
+        let result = TaskResult::default();
+        assert!(!plan.mark_completed("nonexistent", result));
+    }
+
+    #[test]
+    fn test_plan_mark_completed_sets_timestamp() {
+        let mut plan = Plan::new();
+        plan.add_task(Task::notify("t-1", "Test"));
+
+        let result = TaskResult::default();
+        plan.mark_completed("t-1", result);
+
+        let task = plan.get_task("t-1").unwrap();
+        assert!(task.updated_at.is_some());
+        assert!(task.updated_at.unwrap() > 0);
+    }
+
+    // ==================== Task with result serialization ====================
+
+    #[test]
+    fn test_task_with_result_serialize() {
+        let mut task = Task::notify("t-1", "Test");
+        task.status = TaskStatus::Completed;
+        task.result = Some(TaskResult {
+            commits: vec!["abc123 done".to_string()],
+            pr_number: None,
+            pr_url: None,
+        });
+
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(json.contains("\"result\""));
+        assert!(json.contains("abc123"));
+    }
+
+    #[test]
+    fn test_task_with_result_deserialize() {
+        let json = r#"{
+            "id": "t-1",
+            "action": {"type": "notify", "message": "Test"},
+            "status": "completed",
+            "result": {
+                "commits": ["abc123 test"],
+                "pr_number": 42,
+                "pr_url": "https://example.com/pr/42"
+            }
+        }"#;
+
+        let task: Task = serde_json::from_str(json).unwrap();
+        assert_eq!(task.id, "t-1");
+        assert_eq!(task.status, TaskStatus::Completed);
+        assert!(task.result.is_some());
+        let result = task.result.unwrap();
+        assert_eq!(result.commits.len(), 1);
+        assert_eq!(result.pr_number, Some(42));
+    }
+
+    #[test]
+    fn test_task_without_result_deserialize() {
+        let json = r#"{
+            "id": "t-1",
+            "action": {"type": "notify", "message": "Test"},
+            "status": "pending"
+        }"#;
+
+        let task: Task = serde_json::from_str(json).unwrap();
+        assert!(task.result.is_none());
+    }
+
+    // ==================== Archive tests ====================
+
+    #[test]
+    fn test_plan_manager_archive() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PlanManager::new(temp_dir.path());
+
+        let plan = Plan::with_description("Test plan");
+        manager.save(&plan).unwrap();
+        assert!(manager.plan_file().exists());
+
+        let archive_path = manager.archive().unwrap();
+        assert!(archive_path.is_some());
+        assert!(!manager.plan_file().exists());
+
+        let archive = archive_path.unwrap();
+        assert!(archive.exists());
+        assert!(archive.to_string_lossy().contains("plan_"));
+    }
+
+    #[test]
+    fn test_plan_manager_archive_no_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PlanManager::new(temp_dir.path());
+
+        let result = manager.archive().unwrap();
+        assert!(result.is_none());
+    }
+
+    // ==================== Additional TaskAction tests ====================
+
+    #[test]
+    fn test_task_action_merge_branch_serialize() {
+        let action = TaskAction::MergeBranch {
+            branch: "feat/test".to_string(),
+            target: Some("develop".to_string()),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"merge_branch\""));
+        assert!(json.contains("\"target\":\"develop\""));
+    }
+
+    #[test]
+    fn test_task_action_cleanup_worktree_serialize() {
+        let action = TaskAction::CleanupWorktree {
+            worktree: "feat/auth".to_string(),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"cleanup_worktree\""));
+        assert!(json.contains("\"worktree\":\"feat/auth\""));
+    }
+
+    #[test]
+    fn test_task_action_run_command_serialize() {
+        let action = TaskAction::RunCommand {
+            worktree: "feat/test".to_string(),
+            command: "cargo test".to_string(),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"run_command\""));
+        assert!(json.contains("cargo test"));
+    }
+
+    #[test]
+    fn test_task_action_notify_levels() {
+        let levels = [
+            (NotifyLevel::Info, "info"),
+            (NotifyLevel::Warning, "warning"),
+            (NotifyLevel::Error, "error"),
+            (NotifyLevel::Success, "success"),
+        ];
+
+        for (level, expected) in levels {
+            let action = TaskAction::Notify {
+                message: "Test".to_string(),
+                level,
+            };
+            let json = serde_json::to_string(&action).unwrap();
+            assert!(json.contains(expected), "Expected {} in {}", expected, json);
+        }
+    }
+
+    // ==================== Plan edge cases ====================
+
+    #[test]
+    fn test_plan_empty_is_complete() {
+        let plan = Plan::new();
+        assert!(plan.is_complete()); // Empty plan is considered complete
+    }
+
+    #[test]
+    fn test_plan_all_skipped_is_complete() {
+        let mut plan = Plan::new();
+        plan.add_task(Task::notify("t-1", "Test"));
+        plan.update_status("t-1", TaskStatus::Skipped);
+        assert!(plan.is_complete());
+    }
+
+    #[test]
+    fn test_plan_get_task_mut() {
+        let mut plan = Plan::new();
+        plan.add_task(Task::notify("t-1", "Test"));
+
+        {
+            let task = plan.get_task_mut("t-1").unwrap();
+            task.error = Some("Modified".to_string());
+        }
+
+        assert_eq!(plan.get_task("t-1").unwrap().error, Some("Modified".to_string()));
+    }
+
+    #[test]
+    fn test_plan_multiple_tasks_completion() {
+        let mut plan = Plan::new();
+        plan.add_task(Task::create_worker("w-1", "feat/a", "Task A"));
+        plan.add_task(Task::create_worker("w-2", "feat/b", "Task B"));
+        plan.add_task(Task::create_pr("pr-1", "feat/a", "PR A"));
+
+        // Complete first worker
+        plan.mark_completed("w-1", TaskResult {
+            commits: vec!["abc123 done".to_string()],
+            ..Default::default()
+        });
+
+        let (pending, running, completed, failed) = plan.count_by_status();
+        assert_eq!(pending, 2);
+        assert_eq!(completed, 1);
+
+        // Complete second worker
+        plan.mark_completed("w-2", TaskResult::default());
+
+        // Fail PR creation
+        plan.mark_failed("pr-1", "API error");
+
+        assert!(plan.is_complete());
+        let (_, _, completed, failed) = plan.count_by_status();
+        assert_eq!(completed, 2);
+        assert_eq!(failed, 1);
+    }
+
+    // ==================== PlanManager edge cases ====================
+
+    #[test]
+    fn test_plan_manager_load_nonexistent() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PlanManager::new(temp_dir.path());
+
+        let result = manager.load().unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_plan_manager_plan_file_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = PlanManager::new(temp_dir.path());
+
+        let path = manager.plan_file();
+        assert!(path.ends_with("plan.json"));
+        assert!(path.to_string_lossy().contains(".cctakt"));
+    }
+
+    #[test]
+    fn test_plan_manager_current_dir() {
+        let manager = PlanManager::current_dir();
+        let path = manager.plan_file();
+        assert!(path.ends_with("plan.json"));
+    }
+
+    #[test]
+    fn test_plan_manager_save_creates_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PlanManager::new(temp_dir.path());
+
+        // Directory doesn't exist yet
+        let plan_dir = temp_dir.path().join(".cctakt");
+        assert!(!plan_dir.exists());
+
+        // Save should create it
+        let plan = Plan::new();
+        manager.save(&plan).unwrap();
+        assert!(plan_dir.exists());
+    }
+
+    #[test]
+    fn test_plan_roundtrip_with_all_fields() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PlanManager::new(temp_dir.path());
+
+        let mut plan = Plan::with_description("Full test");
+
+        // Add various task types
+        plan.add_task(Task::create_worker("w-1", "feat/test", "Test task"));
+        plan.add_task(Task::create_pr("pr-1", "feat/test", "Test PR"));
+        plan.add_task(Task::notify("n-1", "Notification"));
+
+        // Set various statuses and results
+        plan.update_status("w-1", TaskStatus::Running);
+        plan.mark_completed("pr-1", TaskResult {
+            commits: vec!["commit1".to_string(), "commit2".to_string()],
+            pr_number: Some(100),
+            pr_url: Some("https://example.com/pr/100".to_string()),
+        });
+        plan.mark_failed("n-1", "Test error");
+
+        manager.save(&plan).unwrap();
+
+        // Load and verify
+        let loaded = manager.load().unwrap().unwrap();
+        assert_eq!(loaded.description, Some("Full test".to_string()));
+        assert_eq!(loaded.tasks.len(), 3);
+
+        let w1 = loaded.get_task("w-1").unwrap();
+        assert_eq!(w1.status, TaskStatus::Running);
+
+        let pr1 = loaded.get_task("pr-1").unwrap();
+        assert_eq!(pr1.status, TaskStatus::Completed);
+        assert!(pr1.result.is_some());
+        assert_eq!(pr1.result.as_ref().unwrap().pr_number, Some(100));
+
+        let n1 = loaded.get_task("n-1").unwrap();
+        assert_eq!(n1.status, TaskStatus::Failed);
+        assert_eq!(n1.error, Some("Test error".to_string()));
+    }
 }
