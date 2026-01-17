@@ -2598,11 +2598,11 @@ fn render_split_pane_main_area(f: &mut Frame, app: &mut App, area: ratatui::layo
                 ])
                 .split(area);
 
-            // Left pane: Interactive (orchestrator)
+            // Left pane: Interactive (orchestrator) - no focus color in review mode
             if orchestrator.status == AgentStatus::Ended {
-                render_ended_agent(f, orchestrator, main_chunks[0]);
+                render_ended_agent(f, orchestrator, main_chunks[0], None);
             } else {
-                render_agent_screen(f, orchestrator, main_chunks[0]);
+                render_agent_screen(f, orchestrator, main_chunks[0], None);
             }
 
             // Vertical separator
@@ -2626,6 +2626,10 @@ fn render_split_pane_main_area(f: &mut Frame, app: &mut App, area: ratatui::layo
             let left_focused = app.focused_pane == FocusedPane::Left;
             let right_focused = app.focused_pane == FocusedPane::Right;
 
+            // Determine focus colors
+            let left_focus_color = if left_focused { Some(t.neon_cyan()) } else { None };
+            let right_focus_color = if right_focused { Some(t.neon_pink()) } else { None };
+
             // Split horizontally: left 50% for orchestrator, 1 column for border, right 50% for worker
             let main_chunks = Layout::default()
                 .direction(Direction::Horizontal)
@@ -2636,18 +2640,11 @@ fn render_split_pane_main_area(f: &mut Frame, app: &mut App, area: ratatui::layo
                 ])
                 .split(area);
 
-            // Left pane: Interactive (orchestrator) with focus indicator
-            let left_area = main_chunks[0];
-            if left_focused {
-                // Draw focus indicator (top-left corner marker)
-                let focus_marker = Paragraph::new("◆")
-                    .style(Style::default().fg(t.neon_cyan()));
-                f.render_widget(focus_marker, ratatui::layout::Rect::new(left_area.x, left_area.y, 1, 1));
-            }
+            // Left pane: Interactive (orchestrator)
             if orchestrator.status == AgentStatus::Ended {
-                render_ended_agent(f, orchestrator, main_chunks[0]);
+                render_ended_agent(f, orchestrator, main_chunks[0], left_focus_color);
             } else {
-                render_agent_screen(f, orchestrator, main_chunks[0]);
+                render_agent_screen(f, orchestrator, main_chunks[0], left_focus_color);
             }
 
             // Vertical separator - highlight based on focus
@@ -2663,34 +2660,31 @@ fn render_split_pane_main_area(f: &mut Frame, app: &mut App, area: ratatui::layo
                 .style(Style::default().fg(separator_color));
             f.render_widget(separator, main_chunks[1]);
 
-            // Right pane: NonInteractive (worker) with focus indicator
-            let right_area = main_chunks[2];
-            if right_focused {
-                // Draw focus indicator (top-left corner marker)
-                let focus_marker = Paragraph::new("◆")
-                    .style(Style::default().fg(t.neon_pink()));
-                f.render_widget(focus_marker, ratatui::layout::Rect::new(right_area.x, right_area.y, 1, 1));
-            }
+            // Right pane: NonInteractive (worker)
             if worker.status == AgentStatus::Ended {
-                render_ended_agent(f, worker, main_chunks[2]);
+                render_ended_agent(f, worker, main_chunks[2], right_focus_color);
             } else {
-                render_agent_screen(f, worker, main_chunks[2]);
+                render_agent_screen(f, worker, main_chunks[2], right_focus_color);
             }
         }
-        // Only Interactive agent: full width for orchestrator
+        // Only Interactive agent: full width for orchestrator (always highlighted as single pane)
         (Some(orchestrator), None, false) => {
+            let t = theme();
+            let focus_color = Some(t.neon_cyan());
             if orchestrator.status == AgentStatus::Ended {
-                render_ended_agent(f, orchestrator, area);
+                render_ended_agent(f, orchestrator, area, focus_color);
             } else {
-                render_agent_screen(f, orchestrator, area);
+                render_agent_screen(f, orchestrator, area, focus_color);
             }
         }
-        // Only NonInteractive agents: full width for worker
+        // Only NonInteractive agents: full width for worker (always highlighted as single pane)
         (None, Some(worker), false) => {
+            let t = theme();
+            let focus_color = Some(t.neon_pink());
             if worker.status == AgentStatus::Ended {
-                render_ended_agent(f, worker, area);
+                render_ended_agent(f, worker, area, focus_color);
             } else {
-                render_agent_screen(f, worker, area);
+                render_agent_screen(f, worker, area, focus_color);
             }
         }
         // No agents (shouldn't happen, but handle gracefully)
@@ -2733,8 +2727,13 @@ fn render_no_agent_menu(f: &mut Frame, area: ratatui::layout::Rect) {
 }
 
 /// Render ended agent menu
-fn render_ended_agent(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect) {
+/// `focus_color`: Some(Color) to highlight border with that color, None for muted border
+fn render_ended_agent(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect, focus_color: Option<Color>) {
     let t = theme();
+    let border_style = match focus_color {
+        Some(color) => Style::default().fg(color),
+        None => t.style_border_muted(),
+    };
     let menu = Paragraph::new(vec![
         Line::from(""),
         Line::from(format!("  Agent '{}' session ended.", agent.name)),
@@ -2757,32 +2756,38 @@ fn render_ended_agent(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout
         Block::default()
             .borders(Borders::ALL)
             .title(format!(" {} (ended) ", agent.name))
-            .border_style(t.style_border_muted()),
+            .border_style(border_style),
     );
     f.render_widget(menu, area);
 }
 
 /// Render active agent's screen (handles both interactive and non-interactive modes)
-fn render_agent_screen(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect) {
+/// `focus_color`: Some(Color) to highlight border with that color, None for muted border
+fn render_agent_screen(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect, focus_color: Option<Color>) {
     match agent.mode {
         agent::AgentMode::Interactive => {
-            render_agent_screen_interactive(f, agent, area);
+            render_agent_screen_interactive(f, agent, area, focus_color);
         }
         agent::AgentMode::NonInteractive => {
-            render_agent_screen_non_interactive(f, agent, area);
+            render_agent_screen_non_interactive(f, agent, area, focus_color);
         }
     }
 }
 
 /// Render interactive (PTY) agent screen with vt100 colors
-fn render_agent_screen_interactive(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect) {
+/// `focus_color`: Some(Color) to highlight border with that color, None for muted border
+fn render_agent_screen_interactive(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect, focus_color: Option<Color>) {
     let t = theme();
+    let border_style = match focus_color {
+        Some(color) => Style::default().fg(color),
+        None => t.style_border_muted(),
+    };
     let Some(parser_arc) = agent.get_parser() else {
         // Fallback if no parser
         let widget = Paragraph::new("No parser available").block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(t.style_border_muted()),
+                .border_style(border_style),
         );
         f.render_widget(widget, area);
         return;
@@ -2828,14 +2833,19 @@ fn render_agent_screen_interactive(f: &mut Frame, agent: &agent::Agent, area: ra
     let terminal_widget = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(t.style_border_muted()),
+            .border_style(border_style),
     );
     f.render_widget(terminal_widget, area);
 }
 
 /// Render non-interactive agent screen (JSON stream output)
-fn render_agent_screen_non_interactive(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect) {
+/// `focus_color`: Some(Color) to highlight border with that color, None for muted border
+fn render_agent_screen_non_interactive(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect, focus_color: Option<Color>) {
     let t = theme();
+    let border_style = match focus_color {
+        Some(color) => Style::default().fg(color),
+        None => t.style_border_muted(),
+    };
     let content_height = area.height.saturating_sub(2) as usize;
     let output = agent.screen_text();
 
@@ -2887,7 +2897,7 @@ fn render_agent_screen_non_interactive(f: &mut Frame, agent: &agent::Agent, area
     let terminal_widget = Paragraph::new(visible_lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(t.style_border_muted())
+            .border_style(border_style)
             .title(Span::styled(
                 format!(" {status_text} "),
                 status_style,
