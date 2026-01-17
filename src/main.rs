@@ -3,9 +3,10 @@ mod agent;
 use agent::{AgentManager, AgentStatus};
 use anyhow::{Context, Result};
 use cctakt::{
-    create_theme, debug, issue_picker::centered_rect, render_task, set_theme, suggest_branch_name,
-    theme, Config, DiffView, GitHubClient, Issue, IssuePicker, IssuePickerResult, MergeManager,
-    Plan, PlanManager, TaskAction, TaskResult, TaskStatus, WorktreeManager,
+    available_themes, create_theme, current_theme_id, debug, issue_picker::centered_rect,
+    render_task, set_theme, suggest_branch_name, theme, Config, DiffView, GitHubClient, Issue,
+    IssuePicker, IssuePickerResult, MergeManager, Plan, PlanManager, TaskAction, TaskResult,
+    TaskStatus, WorktreeManager,
 };
 use clap::{Parser, Subcommand};
 use crossterm::{
@@ -77,6 +78,8 @@ enum AppMode {
     IssuePicker,
     /// Review and merge mode - show diff and commit log
     ReviewMerge,
+    /// Theme picker mode
+    ThemePicker,
 }
 
 /// Review state for a completed agent
@@ -199,6 +202,10 @@ struct App {
     pending_review_task_id: Option<String>,
     /// Merge queue for sequential merge processing
     merge_queue: MergeQueue,
+    /// Theme picker: show picker modal
+    show_theme_picker: bool,
+    /// Theme picker: currently selected index
+    theme_picker_index: usize,
 }
 
 impl App {
@@ -234,6 +241,8 @@ impl App {
             prompt_delay_frames: 0,
             pending_review_task_id: None,
             merge_queue: MergeQueue::new(),
+            show_theme_picker: false,
+            theme_picker_index: 0,
         }
     }
 
@@ -257,6 +266,47 @@ impl App {
             self.add_notification(
                 "GitHub repository not configured. Set 'repository' in cctakt.toml or add a git remote.".to_string(),
                 cctakt::plan::NotifyLevel::Warning,
+            );
+        }
+    }
+
+    /// Open theme picker
+    fn open_theme_picker(&mut self) {
+        // Set index to current theme
+        let current = current_theme_id();
+        let themes = available_themes();
+        self.theme_picker_index = themes
+            .iter()
+            .position(|(id, _, _)| *id == current)
+            .unwrap_or(0);
+        self.show_theme_picker = true;
+        self.mode = AppMode::ThemePicker;
+    }
+
+    /// Apply selected theme and save to config
+    fn apply_theme(&mut self, theme_id: &str) {
+        // Set the theme
+        set_theme(create_theme(theme_id));
+
+        // Update config
+        self.config.theme = theme_id.to_string();
+
+        // Save config to file
+        if let Err(e) = self.config.save() {
+            self.add_notification(
+                format!("Failed to save theme: {e}"),
+                cctakt::plan::NotifyLevel::Warning,
+            );
+        } else {
+            let themes = available_themes();
+            let name = themes
+                .iter()
+                .find(|(id, _, _)| *id == theme_id)
+                .map(|(_, name, _)| *name)
+                .unwrap_or(theme_id);
+            self.add_notification(
+                format!("Theme changed to {name}"),
+                cctakt::plan::NotifyLevel::Success,
             );
         }
     }
@@ -1679,6 +1729,10 @@ fn run_tui() -> Result<()> {
                                 }
                             }
                         }
+                        AppMode::ThemePicker => {
+                            // Handle theme picker input
+                            handle_theme_picker_input(&mut app, key.code);
+                        }
                     }
                 }
                 Event::Resize(new_cols, new_rows) => {
@@ -1742,10 +1796,10 @@ fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> b
             app.should_quit = true;
             true
         }
-        // Ctrl+T: Disabled - orchestrator is the only interactive agent
-        // Workers are spawned automatically via plan.json
+        // Ctrl+T: Open theme picker
         (KeyModifiers::CONTROL, KeyCode::Char('t' | 'T')) => {
-            false
+            app.open_theme_picker();
+            true
         }
         // Ctrl+I or F2: Open issue picker
         (KeyModifiers::CONTROL, KeyCode::Char('i' | 'I')) | (_, KeyCode::F(2)) => {
@@ -1784,6 +1838,43 @@ fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> b
     }
 }
 
+/// Handle theme picker keyboard input
+fn handle_theme_picker_input(app: &mut App, code: KeyCode) {
+    let themes = available_themes();
+    let theme_count = themes.len();
+
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.theme_picker_index > 0 {
+                app.theme_picker_index -= 1;
+            } else {
+                app.theme_picker_index = theme_count.saturating_sub(1);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.theme_picker_index < theme_count.saturating_sub(1) {
+                app.theme_picker_index += 1;
+            } else {
+                app.theme_picker_index = 0;
+            }
+        }
+        KeyCode::Enter => {
+            // Apply selected theme
+            if let Some((id, _, _)) = themes.get(app.theme_picker_index) {
+                app.apply_theme(id);
+            }
+            app.show_theme_picker = false;
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            // Cancel
+            app.show_theme_picker = false;
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+}
+
 fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1819,6 +1910,9 @@ fn ui(f: &mut Frame, app: &mut App) {
         }
         AppMode::ReviewMerge => {
             render_review_merge(f, app, f.area());
+        }
+        AppMode::ThemePicker => {
+            render_theme_picker(f, app, f.area());
         }
         AppMode::Normal => {}
     }
@@ -1912,6 +2006,92 @@ fn render_plan_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let status_widget = Paragraph::new(status_text).style(style);
     f.render_widget(status_widget, status_area);
+}
+
+/// Render theme picker modal
+fn render_theme_picker(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let t = theme();
+    let themes = available_themes();
+    let current_theme = current_theme_id();
+
+    // Calculate popup size
+    let popup_width = 40u16;
+    let popup_height = (themes.len() as u16) + 6; // title + items + footer + borders
+
+    // Center the popup
+    let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_area = ratatui::layout::Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width.min(area.width),
+        height: popup_height.min(area.height),
+    };
+
+    // Clear the popup area
+    f.render_widget(Clear, popup_area);
+
+    // Build theme list
+    let mut lines: Vec<Line> = vec![
+        Line::from(""),
+    ];
+
+    for (i, (id, name, description)) in themes.iter().enumerate() {
+        let is_selected = i == app.theme_picker_index;
+        let is_current = *id == current_theme;
+
+        let prefix = if is_selected { " > " } else { "   " };
+        let suffix = if is_current { " ✓" } else { "" };
+
+        let style = if is_selected {
+            Style::default()
+                .fg(t.neon_cyan())
+                .add_modifier(Modifier::BOLD)
+        } else if is_current {
+            Style::default().fg(t.neon_green())
+        } else {
+            t.style_text()
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled(*name, style),
+            Span::styled(suffix, Style::default().fg(t.neon_green())),
+        ]));
+
+        // Show description for selected item
+        if is_selected {
+            lines.push(Line::from(vec![
+                Span::raw("     "),
+                Span::styled(*description, t.style_text_muted()),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+
+    // Footer
+    lines.push(Line::from(vec![
+        Span::styled(" Enter", t.style_key()),
+        Span::styled(": Select  ", t.style_key_desc()),
+        Span::styled("Esc", t.style_key()),
+        Span::styled(": Cancel", t.style_key_desc()),
+    ]));
+
+    let block = Block::default()
+        .title(Span::styled(
+            " テーマを選択 ",
+            Style::default()
+                .fg(t.neon_cyan())
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(t.style_dialog_border())
+        .style(t.style_dialog_bg());
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, popup_area);
 }
 
 /// Render review merge screen

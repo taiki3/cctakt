@@ -4,7 +4,7 @@
 //! Themes include Cyberpunk (default), Monokai, Dracula, Nord, and Minimal.
 
 use ratatui::style::{Color, Modifier, Style};
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 // ==================== ColorTheme Trait ====================
 
@@ -308,24 +308,51 @@ pub trait ColorTheme: Send + Sync {
 
 // ==================== Global Theme Access ====================
 
-static CURRENT_THEME: OnceLock<Box<dyn ColorTheme>> = OnceLock::new();
+static CURRENT_THEME: RwLock<Option<Box<dyn ColorTheme>>> = RwLock::new(None);
+
+/// Static default theme for fallback
+static DEFAULT_THEME: CyberpunkTheme = CyberpunkTheme;
+
+/// Theme accessor wrapper that holds a read guard
+pub struct ThemeGuard<'a> {
+    guard: std::sync::RwLockReadGuard<'a, Option<Box<dyn ColorTheme>>>,
+}
+
+impl std::ops::Deref for ThemeGuard<'_> {
+    type Target = dyn ColorTheme;
+
+    fn deref(&self) -> &Self::Target {
+        self.guard.as_ref().map(|t| t.as_ref()).unwrap_or(&DEFAULT_THEME)
+    }
+}
 
 /// Get the current theme
 ///
-/// Returns the globally set theme, or CyberpunkTheme if none is set.
-pub fn theme() -> &'static dyn ColorTheme {
-    CURRENT_THEME
-        .get()
-        .map(|t| t.as_ref())
-        .unwrap_or(&CyberpunkTheme)
+/// Returns a guard that provides access to the theme.
+/// Falls back to CyberpunkTheme if none is set or if the lock is poisoned.
+pub fn theme() -> ThemeGuard<'static> {
+    ThemeGuard {
+        guard: CURRENT_THEME.read().unwrap_or_else(|e| e.into_inner()),
+    }
 }
 
 /// Set the global theme
 ///
-/// This can only be called once. Subsequent calls will be ignored.
-/// Returns true if the theme was set, false if it was already set.
+/// This can be called multiple times to change the theme at runtime.
+/// Returns true if the theme was set successfully.
 pub fn set_theme(theme_impl: Box<dyn ColorTheme>) -> bool {
-    CURRENT_THEME.set(theme_impl).is_ok()
+    match CURRENT_THEME.write() {
+        Ok(mut guard) => {
+            *guard = Some(theme_impl);
+            true
+        }
+        Err(e) => {
+            // Recover from poisoned lock
+            let mut guard = e.into_inner();
+            *guard = Some(theme_impl);
+            true
+        }
+    }
 }
 
 /// Create a theme from its name
@@ -337,6 +364,40 @@ pub fn create_theme(name: &str) -> Box<dyn ColorTheme> {
         "arctic" | "aurora" | "arctic-aurora" => Box::new(ArcticAuroraTheme),
         "minimal" => Box::new(MinimalTheme),
         _ => Box::new(CyberpunkTheme),
+    }
+}
+
+/// Available themes with their names and descriptions
+///
+/// Returns a list of (id, display_name, description) tuples.
+pub fn available_themes() -> &'static [(&'static str, &'static str, &'static str)] {
+    &[
+        ("cyberpunk", "Cyberpunk", "ネオンカラーのサイバーパンク風"),
+        ("monokai", "Monokai", "クラシックなエディタカラー"),
+        ("dracula", "Dracula", "人気のダークテーマ"),
+        ("nord", "Nord", "北欧の青みのあるパレット"),
+        ("arctic", "Arctic Aurora", "オーロラ風の幻想的なテーマ"),
+        ("minimal", "Minimal", "控えめでプロフェッショナル"),
+    ]
+}
+
+/// Get the theme ID from the current theme
+///
+/// Returns the theme name that can be used with create_theme().
+pub fn current_theme_id() -> &'static str {
+    // We can't easily get the theme ID from the trait object,
+    // so we compare colors to identify the theme
+    let t = theme();
+    let bg = t.bg_dark();
+
+    match bg {
+        Color::Rgb(13, 13, 26) => "cyberpunk",
+        Color::Rgb(39, 40, 34) => "monokai",
+        Color::Rgb(40, 42, 54) => "dracula",
+        Color::Rgb(46, 52, 64) => "nord",
+        Color::Rgb(28, 35, 49) => "arctic",
+        Color::Rgb(26, 26, 26) => "minimal",
+        _ => "cyberpunk",
     }
 }
 
