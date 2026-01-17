@@ -1803,8 +1803,12 @@ fn run_tui() -> Result<()> {
                                 let handled = handle_keybinding(&mut app, key.modifiers, key.code);
 
                                 if !handled {
-                                    // Forward to active agent's PTY
-                                    if let Some(agent) = app.agent_manager.active_mut() {
+                                    // Forward to focused pane's agent PTY
+                                    let agent = match app.focused_pane {
+                                        FocusedPane::Left => app.agent_manager.get_interactive_mut(),
+                                        FocusedPane::Right => app.agent_manager.get_active_non_interactive_mut(),
+                                    };
+                                    if let Some(agent) = agent {
                                         if agent.status == AgentStatus::Running {
                                             match (key.modifiers, key.code) {
                                                 (KeyModifiers::CONTROL, KeyCode::Char(c)) => {

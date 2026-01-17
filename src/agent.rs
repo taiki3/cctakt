@@ -618,6 +618,11 @@ impl AgentManager {
         self.agents.iter().find(|a| a.mode == AgentMode::Interactive)
     }
 
+    /// Get the Interactive (orchestrator) agent (mutable)
+    pub fn get_interactive_mut(&mut self) -> Option<&mut Agent> {
+        self.agents.iter_mut().find(|a| a.mode == AgentMode::Interactive)
+    }
+
     /// Get all NonInteractive (worker) agents
     #[allow(dead_code)]
     pub fn get_non_interactive_agents(&self) -> Vec<&Agent> {
@@ -644,6 +649,28 @@ impl AgentManager {
 
         // Default to first worker
         workers.first().map(|(_, a)| *a)
+    }
+
+    /// Get the active NonInteractive agent (mutable)
+    pub fn get_active_non_interactive_mut(&mut self) -> Option<&mut Agent> {
+        let worker_indices: Vec<_> = self.agents.iter()
+            .enumerate()
+            .filter(|(_, a)| a.mode == AgentMode::NonInteractive)
+            .map(|(idx, _)| idx)
+            .collect();
+
+        if worker_indices.is_empty() {
+            return None;
+        }
+
+        // Find if active_index points to a worker
+        if worker_indices.contains(&self.active_index) {
+            return self.agents.get_mut(self.active_index);
+        }
+
+        // Default to first worker
+        let first_idx = worker_indices[0];
+        self.agents.get_mut(first_idx)
     }
 
     /// Get the index of the active NonInteractive agent within workers list
