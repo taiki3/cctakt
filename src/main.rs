@@ -1962,12 +1962,8 @@ fn ui(f: &mut Frame, app: &mut App) {
     // Main area
     if app.agent_manager.is_empty() {
         render_no_agent_menu(f, chunks[1]);
-    } else if let Some(agent) = app.agent_manager.active() {
-        if agent.status == AgentStatus::Ended {
-            render_ended_agent(f, agent, chunks[1]);
-        } else {
-            render_agent_screen(f, agent, chunks[1]);
-        }
+    } else {
+        render_split_pane_main_area(f, &app.agent_manager, chunks[1]);
     }
 
     // Render overlays based on mode
@@ -2450,6 +2446,71 @@ fn render_footer(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 /// Render menu when no agents exist
+/// Render the main area with split panes for Interactive (left) and NonInteractive (right) agents
+fn render_split_pane_main_area(f: &mut Frame, agent_manager: &agent::AgentManager, area: ratatui::layout::Rect) {
+    let interactive = agent_manager.get_interactive();
+    let active_worker = agent_manager.get_active_non_interactive();
+
+    match (interactive, active_worker) {
+        // Both Interactive and NonInteractive agents exist: split pane layout
+        (Some(orchestrator), Some(worker)) => {
+            let t = theme();
+
+            // Split horizontally: left 50% for orchestrator, 1 column for border, right 50% for worker
+            let main_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(50),
+                    Constraint::Length(1), // vertical separator
+                    Constraint::Percentage(50),
+                ])
+                .split(area);
+
+            // Left pane: Interactive (orchestrator)
+            if orchestrator.status == AgentStatus::Ended {
+                render_ended_agent(f, orchestrator, main_chunks[0]);
+            } else {
+                render_agent_screen(f, orchestrator, main_chunks[0]);
+            }
+
+            // Vertical separator
+            let separator_lines: Vec<Line> = (0..main_chunks[1].height)
+                .map(|_| Line::from("│"))
+                .collect();
+            let separator = Paragraph::new(separator_lines)
+                .style(Style::default().fg(t.border_secondary()));
+            f.render_widget(separator, main_chunks[1]);
+
+            // Right pane: NonInteractive (worker)
+            if worker.status == AgentStatus::Ended {
+                render_ended_agent(f, worker, main_chunks[2]);
+            } else {
+                render_agent_screen(f, worker, main_chunks[2]);
+            }
+        }
+        // Only Interactive agent: full width for orchestrator
+        (Some(orchestrator), None) => {
+            if orchestrator.status == AgentStatus::Ended {
+                render_ended_agent(f, orchestrator, area);
+            } else {
+                render_agent_screen(f, orchestrator, area);
+            }
+        }
+        // Only NonInteractive agents: full width for worker
+        (None, Some(worker)) => {
+            if worker.status == AgentStatus::Ended {
+                render_ended_agent(f, worker, area);
+            } else {
+                render_agent_screen(f, worker, area);
+            }
+        }
+        // No agents (shouldn't happen, but handle gracefully)
+        (None, None) => {
+            render_no_agent_menu(f, area);
+        }
+    }
+}
+
 fn render_no_agent_menu(f: &mut Frame, area: ratatui::layout::Rect) {
     let t = theme();
     let menu = Paragraph::new(vec![
