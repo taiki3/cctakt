@@ -612,6 +612,71 @@ impl AgentManager {
             agent.resize(cols, rows);
         }
     }
+
+    /// Get the first Interactive (orchestrator) agent
+    pub fn get_interactive(&self) -> Option<&Agent> {
+        self.agents.iter().find(|a| a.mode == AgentMode::Interactive)
+    }
+
+    /// Get all NonInteractive (worker) agents
+    #[allow(dead_code)]
+    pub fn get_non_interactive_agents(&self) -> Vec<&Agent> {
+        self.agents.iter().filter(|a| a.mode == AgentMode::NonInteractive).collect()
+    }
+
+    /// Get the active NonInteractive agent (based on active_index among workers)
+    pub fn get_active_non_interactive(&self) -> Option<&Agent> {
+        let workers: Vec<_> = self.agents.iter()
+            .enumerate()
+            .filter(|(_, a)| a.mode == AgentMode::NonInteractive)
+            .collect();
+
+        if workers.is_empty() {
+            return None;
+        }
+
+        // Find if active_index points to a worker
+        if let Some(agent) = self.agents.get(self.active_index) {
+            if agent.mode == AgentMode::NonInteractive {
+                return Some(agent);
+            }
+        }
+
+        // Default to first worker
+        workers.first().map(|(_, a)| *a)
+    }
+
+    /// Get the index of the active NonInteractive agent within workers list
+    #[allow(dead_code)]
+    pub fn active_worker_index(&self) -> Option<usize> {
+        let workers: Vec<_> = self.agents.iter()
+            .enumerate()
+            .filter(|(_, a)| a.mode == AgentMode::NonInteractive)
+            .collect();
+
+        if workers.is_empty() {
+            return None;
+        }
+
+        // Check if active_index points to a worker
+        workers.iter()
+            .position(|(idx, _)| *idx == self.active_index)
+            .or(Some(0))
+    }
+
+    /// Switch to a worker by its index within the workers list
+    #[allow(dead_code)]
+    pub fn switch_to_worker(&mut self, worker_index: usize) {
+        let workers: Vec<_> = self.agents.iter()
+            .enumerate()
+            .filter(|(_, a)| a.mode == AgentMode::NonInteractive)
+            .map(|(idx, _)| idx)
+            .collect();
+
+        if let Some(&global_idx) = workers.get(worker_index) {
+            self.active_index = global_idx;
+        }
+    }
 }
 
 impl Default for AgentManager {
