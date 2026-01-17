@@ -3,6 +3,7 @@
 //! Provides a status bar widget that displays the status of all agents
 //! in a compact format at the bottom of the screen.
 
+use crate::theme::Theme;
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -38,10 +39,10 @@ impl AgentStatusKind {
     /// Get the color for this status
     fn color(&self) -> Color {
         match self {
-            AgentStatusKind::Running => Color::Green,
-            AgentStatusKind::Idle => Color::Yellow,
-            AgentStatusKind::Ended => Color::DarkGray,
-            AgentStatusKind::Error => Color::Red,
+            AgentStatusKind::Running => Theme::STATUS_RUNNING,
+            AgentStatusKind::Idle => Theme::STATUS_IDLE,
+            AgentStatusKind::Ended => Theme::STATUS_ENDED,
+            AgentStatusKind::Error => Theme::STATUS_ERROR,
         }
     }
 
@@ -126,15 +127,15 @@ impl StatusBar {
             let empty = Paragraph::new(Line::from(vec![
                 Span::styled(
                     "\u{2500}".repeat(3), // ───
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Theme::BORDER_SECONDARY),
                 ),
                 Span::styled(
                     " No agents running ",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Theme::TEXT_MUTED),
                 ),
                 Span::styled(
                     "\u{2500}".repeat(area.width.saturating_sub(25) as usize),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Theme::BORDER_SECONDARY),
                 ),
             ]));
             f.render_widget(empty, area);
@@ -146,24 +147,24 @@ impl StatusBar {
         // Separator at start
         spans.push(Span::styled(
             "\u{2500} ", // ─
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Theme::BORDER_SECONDARY),
         ));
 
         for (idx, agent) in self.agents.iter().enumerate() {
             if idx > 0 {
                 spans.push(Span::styled(
                     "  ",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Theme::BORDER_SECONDARY),
                 ));
             }
 
             // Agent number with bracket
             let bracket_style = if agent.is_active {
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(Theme::NEON_CYAN)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(Theme::TEXT_MUTED)
             };
 
             spans.push(Span::styled("[", bracket_style));
@@ -173,10 +174,10 @@ impl StatusBar {
             // Agent name
             let name_style = if agent.is_active {
                 Style::default()
-                    .fg(Color::White)
+                    .fg(Theme::TEXT_PRIMARY)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(Theme::TEXT_SECONDARY)
             };
 
             // Truncate name if too long
@@ -211,7 +212,7 @@ impl StatusBar {
         if remaining > 0 {
             spans.push(Span::styled(
                 format!(" {}", "\u{2500}".repeat(remaining as usize)),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Theme::BORDER_SECONDARY),
             ));
         }
 
@@ -229,6 +230,7 @@ impl Default for StatusBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
 
     #[test]
     fn test_statusbar_new() {
@@ -265,10 +267,10 @@ mod tests {
 
     #[test]
     fn test_status_kind_color() {
-        assert_eq!(AgentStatusKind::Running.color(), Color::Green);
-        assert_eq!(AgentStatusKind::Idle.color(), Color::Yellow);
-        assert_eq!(AgentStatusKind::Ended.color(), Color::DarkGray);
-        assert_eq!(AgentStatusKind::Error.color(), Color::Red);
+        assert_eq!(AgentStatusKind::Running.color(), Theme::STATUS_RUNNING);
+        assert_eq!(AgentStatusKind::Idle.color(), Theme::STATUS_IDLE);
+        assert_eq!(AgentStatusKind::Ended.color(), Theme::STATUS_ENDED);
+        assert_eq!(AgentStatusKind::Error.color(), Theme::STATUS_ERROR);
     }
 
     #[test]

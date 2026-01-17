@@ -1,0 +1,8 @@
+[DEBUG] fetch_issues called, github_client exists: true
+[DEBUG] Fetching from repo: taiki3/cctakt
+[DEBUG] Calling client.fetch_issues...
+[DEBUG] HTTP GET: https://api.github.com/repos/taiki3/cctakt/issues?state=open
+[DEBUG] Sending request...
+[DEBUG] Got response: 200
+[DEBUG] Got 2 issues
+[DEBUG] fetch_issues done

@@ -3,10 +3,10 @@
 //! Provides a generic input dialog widget for user input operations
 //! such as adding agents, entering task descriptions, etc.
 
+use crate::theme::Theme;
 use crossterm::event::KeyCode;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
@@ -167,8 +167,8 @@ impl InputDialog {
         let block = Block::default()
             .title(format!(" {} ", self.title))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .style(Style::default().bg(Color::Black));
+            .border_style(Theme::style_dialog_border())
+            .style(Theme::style_dialog_bg());
 
         f.render_widget(block.clone(), dialog_area);
 
@@ -190,7 +190,7 @@ impl InputDialog {
 
         // Prompt text
         let prompt = Paragraph::new(self.prompt.as_str())
-            .style(Style::default().fg(Color::White));
+            .style(Theme::style_text());
         f.render_widget(prompt, chunks[0]);
 
         // Input field with cursor
@@ -202,9 +202,7 @@ impl InputDialog {
                 Span::raw(before),
                 Span::styled(
                     cursor_char.to_string(),
-                    Style::default()
-                        .bg(Color::White)
-                        .fg(Color::Black),
+                    Theme::style_cursor(),
                 ),
                 Span::raw(remaining),
             ])
@@ -213,27 +211,25 @@ impl InputDialog {
                 Span::raw(&self.input),
                 Span::styled(
                     " ",
-                    Style::default()
-                        .bg(Color::White)
-                        .fg(Color::Black),
+                    Theme::style_cursor(),
                 ),
             ])
         };
 
         let input_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
+            .border_style(Theme::style_border_muted());
 
         let input_field = Paragraph::new(input_display)
             .block(input_block)
-            .style(Style::default().fg(Color::Yellow));
+            .style(Theme::style_input());
         f.render_widget(input_field, chunks[2]);
 
         // Help text
         let help = Paragraph::new(Line::from(vec![
-            Span::styled("[Enter]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled("[Enter]", Theme::style_success()),
             Span::raw(" Submit  "),
-            Span::styled("[Esc]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled("[Esc]", Theme::style_error()),
             Span::raw(" Cancel"),
         ]))
         .alignment(Alignment::Center);

@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use cctakt::{
     issue_picker::centered_rect, render_task, suggest_branch_name, Config, DiffView, GitHubClient,
     Issue, IssuePicker, IssuePickerResult, MergeManager, Plan, PlanManager, TaskAction, TaskResult,
-    TaskStatus, WorktreeManager,
+    TaskStatus, Theme, WorktreeManager,
 };
 use clap::{Parser, Subcommand};
 use crossterm::{
@@ -1475,10 +1475,10 @@ fn render_notifications(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .take(3)
         .map(|n| {
             let (prefix, style) = match n.level {
-                cctakt::plan::NotifyLevel::Info => ("ℹ", Style::default().fg(Color::Cyan)),
-                cctakt::plan::NotifyLevel::Warning => ("⚠", Style::default().fg(Color::Yellow)),
-                cctakt::plan::NotifyLevel::Error => ("✗", Style::default().fg(Color::Red)),
-                cctakt::plan::NotifyLevel::Success => ("✓", Style::default().fg(Color::Green)),
+                cctakt::plan::NotifyLevel::Info => ("ℹ", Theme::style_info()),
+                cctakt::plan::NotifyLevel::Warning => ("⚠", Theme::style_warning()),
+                cctakt::plan::NotifyLevel::Error => ("✗", Theme::style_error()),
+                cctakt::plan::NotifyLevel::Success => ("✓", Theme::style_success()),
             };
             Line::from(vec![
                 Span::styled(format!(" {} ", prefix), style),
@@ -1490,7 +1490,7 @@ fn render_notifications(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let notification_widget = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
+            .border_style(Theme::style_border_muted()),
     );
 
     f.render_widget(Clear, notification_area);
@@ -1519,13 +1519,13 @@ fn render_plan_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     };
 
     let style = if failed > 0 {
-        Style::default().fg(Color::Red)
+        Theme::style_error()
     } else if running > 0 {
-        Style::default().fg(Color::Yellow)
+        Theme::style_warning()
     } else if pending > 0 {
-        Style::default().fg(Color::Cyan)
+        Theme::style_info()
     } else {
-        Style::default().fg(Color::Green)
+        Theme::style_success()
     };
 
     let status_widget = Paragraph::new(status_text).style(style);
@@ -1554,29 +1554,29 @@ fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect
     // Header with merge info
     let mut header_lines = vec![
         Line::from(vec![
-            Span::styled(" Review Merge: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled(&state.branch, Style::default().fg(Color::Yellow)),
+            Span::styled(" Review Merge: ", Style::default().fg(Theme::NEON_CYAN).add_modifier(Modifier::BOLD)),
+            Span::styled(&state.branch, Style::default().fg(Theme::NEON_YELLOW)),
             Span::raw(" → "),
-            Span::styled("main", Style::default().fg(Color::Green)),
+            Span::styled("main", Style::default().fg(Theme::SUCCESS)),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::raw(" Stats: "),
-            Span::styled(format!("{} files", state.files_changed), Style::default().fg(Color::White)),
+            Span::styled(format!("{} files", state.files_changed), Theme::style_text()),
             Span::raw(", "),
-            Span::styled(format!("+{}", state.insertions), Style::default().fg(Color::Green)),
+            Span::styled(format!("+{}", state.insertions), Style::default().fg(Theme::SUCCESS)),
             Span::raw(" / "),
-            Span::styled(format!("-{}", state.deletions), Style::default().fg(Color::Red)),
+            Span::styled(format!("-{}", state.deletions), Style::default().fg(Theme::ERROR)),
         ]),
     ];
 
     // Show conflicts warning if any
     if !state.conflicts.is_empty() {
         header_lines.push(Line::from(vec![
-            Span::styled(" ⚠ Potential conflicts: ", Style::default().fg(Color::Yellow)),
+            Span::styled(" ⚠ Potential conflicts: ", Theme::style_warning()),
             Span::styled(
                 state.conflicts.join(", "),
-                Style::default().fg(Color::Yellow),
+                Theme::style_warning(),
             ),
         ]));
     }
@@ -1585,10 +1585,10 @@ fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect
     if !state.commit_log.is_empty() {
         header_lines.push(Line::from(""));
         header_lines.push(Line::from(vec![
-            Span::styled(" Recent commits: ", Style::default().fg(Color::Cyan)),
+            Span::styled(" Recent commits: ", Style::default().fg(Theme::NEON_CYAN)),
             Span::styled(
                 state.commit_log.lines().next().unwrap_or(""),
-                Style::default().fg(Color::Gray),
+                Theme::style_text_secondary(),
             ),
         ]));
     }
@@ -1596,7 +1596,7 @@ fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect
     let header = Paragraph::new(header_lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Theme::style_border()),
     );
     f.render_widget(header, chunks[0]);
 
@@ -1605,17 +1605,17 @@ fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect
 
     // Footer with help
     let footer = Paragraph::new(vec![Line::from(vec![
-        Span::styled(" [Enter/M]", Style::default().fg(Color::Green)),
+        Span::styled(" [Enter/M]", Theme::style_success()),
         Span::raw(" Merge  "),
-        Span::styled("[Esc/C]", Style::default().fg(Color::Red)),
+        Span::styled("[Esc/C]", Theme::style_error()),
         Span::raw(" Cancel  "),
-        Span::styled("[↑/↓/PgUp/PgDn]", Style::default().fg(Color::Cyan)),
+        Span::styled("[↑/↓/PgUp/PgDn]", Theme::style_key()),
         Span::raw(" Scroll"),
     ])])
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
+            .border_style(Theme::style_border_muted()),
     );
     f.render_widget(footer, chunks[2]);
 }
@@ -1626,8 +1626,8 @@ fn render_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::styled(
             " cctakt ",
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
+                .fg(Theme::TAB_ACTIVE_FG)
+                .bg(Theme::NEON_PINK)
                 .add_modifier(Modifier::BOLD),
         ),
     ];
@@ -1642,14 +1642,11 @@ fn render_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let tab_content = format!(" [{}:{}] ", i + 1, agent.name);
 
         let style = if is_active {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::White)
-                .add_modifier(Modifier::BOLD)
+            Theme::style_tab_active()
         } else if is_ended {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(Theme::STATUS_ENDED)
         } else {
-            Style::default().fg(Color::Gray)
+            Theme::style_tab_inactive()
         };
 
         spans.push(Span::styled(tab_content, style));
@@ -1658,7 +1655,7 @@ fn render_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     // Add help text on the right
     spans.push(Span::styled(
         " [^T:new ^I:issue ^W:close ^N/^P:switch ^Q:quit]",
-        Style::default().fg(Color::DarkGray),
+        Theme::style_text_muted(),
     ));
 
     let header = Paragraph::new(Line::from(spans));
@@ -1672,27 +1669,27 @@ fn render_no_agent_menu(f: &mut Frame, area: ratatui::layout::Rect) {
         Line::from("  No active agents."),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  [N]", Style::default().fg(Color::Green)),
+            Span::styled("  [N]", Theme::style_success()),
             Span::raw(" New agent"),
         ]),
         Line::from(vec![
-            Span::styled("  [I/F2]", Style::default().fg(Color::Cyan)),
+            Span::styled("  [I/F2]", Theme::style_info()),
             Span::raw(" New agent from GitHub issue"),
         ]),
         Line::from(vec![
-            Span::styled("  [Q]", Style::default().fg(Color::Red)),
+            Span::styled("  [Q]", Theme::style_error()),
             Span::raw(" Quit cctakt"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             "  Press N, I, or Q...",
-            Style::default().fg(Color::DarkGray),
+            Theme::style_text_muted(),
         )),
     ])
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
+            .border_style(Theme::style_border_muted()),
     );
     f.render_widget(menu, area);
 }
@@ -1704,15 +1701,15 @@ fn render_ended_agent(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout
         Line::from(format!("  Agent '{}' session ended.", agent.name)),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  [Ctrl+T]", Style::default().fg(Color::Green)),
+            Span::styled("  [Ctrl+T]", Theme::style_success()),
             Span::raw(" New agent"),
         ]),
         Line::from(vec![
-            Span::styled("  [Ctrl+W]", Style::default().fg(Color::Yellow)),
+            Span::styled("  [Ctrl+W]", Theme::style_warning()),
             Span::raw(" Close this tab"),
         ]),
         Line::from(vec![
-            Span::styled("  [Ctrl+N/P]", Style::default().fg(Color::Blue)),
+            Span::styled("  [Ctrl+N/P]", Style::default().fg(Theme::NEON_BLUE)),
             Span::raw(" Switch to another tab"),
         ]),
         Line::from(vec![
@@ -1725,7 +1722,7 @@ fn render_ended_agent(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout
         Block::default()
             .borders(Borders::ALL)
             .title(format!(" {} (ended) ", agent.name))
-            .border_style(Style::default().fg(Color::DarkGray)),
+            .border_style(Theme::style_border_muted()),
     );
     f.render_widget(menu, area);
 }
@@ -1772,7 +1769,7 @@ fn render_agent_screen(f: &mut Frame, agent: &agent::Agent, area: ratatui::layou
     let terminal_widget = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
+            .border_style(Theme::style_border_muted()),
     );
     f.render_widget(terminal_widget, area);
 }
