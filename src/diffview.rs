@@ -3,6 +3,7 @@
 //! Provides a scrollable diff viewer widget for reviewing changes
 //! before merging branches.
 
+use crate::theme::Theme;
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
@@ -65,20 +66,20 @@ impl DiffLineType {
     /// Get the foreground color for this line type
     fn color(&self) -> Color {
         match self {
-            DiffLineType::Context => Color::White,
-            DiffLineType::Addition => Color::Green,
-            DiffLineType::Deletion => Color::Red,
-            DiffLineType::HunkHeader => Color::Cyan,
-            DiffLineType::FileHeader => Color::Yellow,
-            DiffLineType::Empty => Color::White,
+            DiffLineType::Context => Theme::DIFF_CONTEXT,
+            DiffLineType::Addition => Theme::DIFF_ADDITION,
+            DiffLineType::Deletion => Theme::DIFF_DELETION,
+            DiffLineType::HunkHeader => Theme::DIFF_HUNK_HEADER,
+            DiffLineType::FileHeader => Theme::DIFF_FILE_HEADER,
+            DiffLineType::Empty => Theme::TEXT_PRIMARY,
         }
     }
 
     /// Get the background color for this line type (if any)
     fn bg_color(&self) -> Option<Color> {
         match self {
-            DiffLineType::Addition => Some(Color::Rgb(0, 40, 0)),
-            DiffLineType::Deletion => Some(Color::Rgb(40, 0, 0)),
+            DiffLineType::Addition => Some(Theme::DIFF_ADD_BG),
+            DiffLineType::Deletion => Some(Theme::DIFF_DEL_BG),
             _ => None,
         }
     }
@@ -169,7 +170,7 @@ impl DiffView {
         let block = Block::default()
             .title(format!(" {title} "))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
+            .border_style(Style::default().fg(Theme::BORDER_PRIMARY));
 
         // Build styled lines
         let visible_lines: Vec<Line> = self
@@ -193,31 +194,31 @@ impl DiffView {
         let help_line = Line::from(vec![
             Span::styled(
                 "[",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Theme::TEXT_MUTED),
             ),
             Span::styled(
                 "\u{2191}/\u{2193}",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(Theme::KEY_BINDING),
             ),
             Span::styled(
                 "] Scroll  ",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Theme::TEXT_MUTED),
             ),
             Span::styled(
                 "[Enter]",
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                Theme::style_success(),
             ),
             Span::styled(
                 " Merge  ",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Theme::TEXT_MUTED),
             ),
             Span::styled(
                 "[Esc]",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Theme::style_error(),
             ),
             Span::styled(
                 " Cancel",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Theme::TEXT_MUTED),
             ),
         ]);
 
@@ -340,6 +341,7 @@ fn style_diff_line(line: &DiffLine) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
 
     #[test]
     fn test_diffview_new() {
@@ -423,11 +425,11 @@ mod tests {
 
     #[test]
     fn test_diff_line_type_color() {
-        assert_eq!(DiffLineType::Context.color(), Color::White);
-        assert_eq!(DiffLineType::Addition.color(), Color::Green);
-        assert_eq!(DiffLineType::Deletion.color(), Color::Red);
-        assert_eq!(DiffLineType::HunkHeader.color(), Color::Cyan);
-        assert_eq!(DiffLineType::FileHeader.color(), Color::Yellow);
+        assert_eq!(DiffLineType::Context.color(), Theme::DIFF_CONTEXT);
+        assert_eq!(DiffLineType::Addition.color(), Theme::DIFF_ADDITION);
+        assert_eq!(DiffLineType::Deletion.color(), Theme::DIFF_DELETION);
+        assert_eq!(DiffLineType::HunkHeader.color(), Theme::DIFF_HUNK_HEADER);
+        assert_eq!(DiffLineType::FileHeader.color(), Theme::DIFF_FILE_HEADER);
     }
 
     #[test]

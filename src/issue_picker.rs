@@ -3,10 +3,11 @@
 //! Provides a TUI component for selecting GitHub issues.
 
 use crate::github::Issue;
+use crate::theme::Theme;
 use crossterm::event::KeyCode;
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
@@ -160,7 +161,7 @@ impl IssuePicker {
         let block = Block::default()
             .title(" Select Issue ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
+            .border_style(Theme::style_border());
 
         let inner_area = block.inner(area);
         f.render_widget(block, area);
@@ -168,7 +169,7 @@ impl IssuePicker {
         // Handle loading state
         if self.loading {
             let loading_text = Paragraph::new("Loading issues...")
-                .style(Style::default().fg(Color::Yellow));
+                .style(Theme::style_loading());
             f.render_widget(loading_text, inner_area);
             return;
         }
@@ -176,7 +177,7 @@ impl IssuePicker {
         // Handle error state
         if let Some(ref error) = self.error {
             let error_text = Paragraph::new(format!("Error: {error}"))
-                .style(Style::default().fg(Color::Red));
+                .style(Style::default().fg(Theme::ERROR));
             f.render_widget(error_text, inner_area);
             return;
         }
@@ -184,7 +185,7 @@ impl IssuePicker {
         // Handle empty state
         if self.issues.is_empty() {
             let empty_text = Paragraph::new("No issues found")
-                .style(Style::default().fg(Color::DarkGray));
+                .style(Theme::style_text_muted());
             f.render_widget(empty_text, inner_area);
             return;
         }
@@ -226,9 +227,9 @@ impl IssuePicker {
                 let line = Line::from(vec![
                     Span::styled(
                         format!("#{:<5} ", issue.number),
-                        Style::default().fg(Color::Yellow),
+                        Style::default().fg(Theme::ISSUE_NUMBER),
                     ),
-                    Span::styled(labels, Style::default().fg(Color::Magenta)),
+                    Span::styled(labels, Style::default().fg(Theme::ISSUE_LABEL)),
                     Span::raw(&issue.title),
                 ]);
 
@@ -237,26 +238,22 @@ impl IssuePicker {
             .collect();
 
         let list = List::new(items)
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .highlight_style(Theme::style_selected())
             .highlight_symbol("> ");
 
         f.render_stateful_widget(list, list_area, &mut self.list_state);
 
         // Render help text
         let help_text = Line::from(vec![
-            Span::styled("[", Style::default().fg(Color::DarkGray)),
-            Span::styled("Up/Down", Style::default().fg(Color::Cyan)),
-            Span::styled("] Navigate  [", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::styled("] Select  [", Style::default().fg(Color::DarkGray)),
-            Span::styled("r", Style::default().fg(Color::Cyan)),
-            Span::styled("] Refresh  [", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::styled("] Cancel", Style::default().fg(Color::DarkGray)),
+            Span::styled("[", Theme::style_text_muted()),
+            Span::styled("Up/Down", Theme::style_key()),
+            Span::styled("] Navigate  [", Theme::style_text_muted()),
+            Span::styled("Enter", Theme::style_key()),
+            Span::styled("] Select  [", Theme::style_text_muted()),
+            Span::styled("r", Theme::style_key()),
+            Span::styled("] Refresh  [", Theme::style_text_muted()),
+            Span::styled("Esc", Theme::style_key()),
+            Span::styled("] Cancel", Theme::style_text_muted()),
         ]);
 
         let help = Paragraph::new(help_text);

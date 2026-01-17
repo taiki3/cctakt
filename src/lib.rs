@@ -14,6 +14,7 @@
 //! - [`statusbar`] - Status bar for displaying agent statuses
 //! - [`diffview`] - Diff viewer for reviewing changes
 //! - [`issue_picker`] - GitHub issue selection UI
+//! - [`theme`] - Cyberpunk color theme
 //!
 //! ## Git Operations
 //! - [`merge`] - Git merge operations manager
@@ -35,6 +36,7 @@ pub mod dialog;
 pub mod statusbar;
 pub mod diffview;
 pub mod issue_picker;
+pub mod theme;
 
 // Git Operations
 pub mod merge;
@@ -59,3 +61,4 @@ pub use github::{GitHubClient, Issue, Label};
 pub use issue_picker::{IssuePicker, IssuePickerResult};
 pub use template::{TaskTemplate, render_task, suggest_branch_name, suggest_commit_message};
 pub use anthropic::AnthropicClient;
+pub use theme::{CyberpunkTheme, Theme};
