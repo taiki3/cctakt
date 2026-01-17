@@ -334,6 +334,7 @@ pub fn create_theme(name: &str) -> Box<dyn ColorTheme> {
         "monokai" => Box::new(MonokaiTheme),
         "dracula" => Box::new(DraculaTheme),
         "nord" => Box::new(NordTheme),
+        "arctic" | "aurora" | "arctic-aurora" => Box::new(ArcticAuroraTheme),
         "minimal" => Box::new(MinimalTheme),
         _ => Box::new(CyberpunkTheme),
     }
@@ -687,6 +688,100 @@ impl ColorTheme for NordTheme {
     }
 }
 
+// ==================== Arctic Aurora Theme ====================
+
+/// Arctic Aurora color palette
+///
+/// A Nordic theme inspired by the aurora borealis, featuring
+/// blue-green to purple gradient-like colors against a deep night sky.
+pub struct ArcticAuroraTheme;
+
+impl ColorTheme for ArcticAuroraTheme {
+    fn neon_pink(&self) -> Color {
+        Color::Rgb(201, 160, 220) // #C9A0DC - Soft purple (aurora pink)
+    }
+
+    fn neon_cyan(&self) -> Color {
+        Color::Rgb(127, 219, 202) // #7FDBCA - Teal (aurora green)
+    }
+
+    fn neon_purple(&self) -> Color {
+        Color::Rgb(157, 142, 201) // #9D8EC9 - Purple (aurora purple)
+    }
+
+    fn neon_green(&self) -> Color {
+        Color::Rgb(163, 217, 165) // #A3D9A5 - Pale green (aurora green)
+    }
+
+    fn neon_yellow(&self) -> Color {
+        Color::Rgb(240, 230, 140) // #F0E68C - Khaki (subtle yellow)
+    }
+
+    fn neon_orange(&self) -> Color {
+        Color::Rgb(232, 184, 157) // #E8B89D - Salmon pink
+    }
+
+    fn neon_blue(&self) -> Color {
+        Color::Rgb(135, 206, 235) // #87CEEB - Sky blue
+    }
+
+    fn bg_dark(&self) -> Color {
+        Color::Rgb(28, 35, 49) // #1C2331 - Deep navy
+    }
+
+    fn bg_panel(&self) -> Color {
+        Color::Rgb(37, 45, 59) // #252D3B - Slightly lighter navy
+    }
+
+    fn bg_surface(&self) -> Color {
+        Color::Rgb(46, 56, 71) // #2E3847 - Panel surface
+    }
+
+    fn bg_highlight(&self) -> Color {
+        Color::Rgb(58, 69, 86) // #3A4556 - Highlight
+    }
+
+    fn text_primary(&self) -> Color {
+        Color::Rgb(232, 238, 245) // #E8EEF5 - Snow white
+    }
+
+    fn text_secondary(&self) -> Color {
+        Color::Rgb(184, 197, 214) // #B8C5D6 - Light blue-gray
+    }
+
+    fn text_muted(&self) -> Color {
+        Color::Rgb(107, 122, 143) // #6B7A8F - Muted blue
+    }
+
+    fn error(&self) -> Color {
+        Color::Rgb(229, 115, 115) // #E57373 - Soft red
+    }
+
+    fn status_ended(&self) -> Color {
+        Color::Rgb(93, 107, 126) // #5D6B7E - Gray
+    }
+
+    fn border_secondary(&self) -> Color {
+        Color::Rgb(58, 69, 86) // #3A4556
+    }
+
+    fn diff_add_bg(&self) -> Color {
+        Color::Rgb(30, 58, 47) // #1E3A2F - Dark green
+    }
+
+    fn diff_del_bg(&self) -> Color {
+        Color::Rgb(58, 40, 50) // #3A2832 - Dark red
+    }
+
+    fn border_primary(&self) -> Color {
+        Color::Rgb(127, 219, 202) // #7FDBCA - Teal (aurora accent)
+    }
+
+    fn tab_active_bg(&self) -> Color {
+        Color::Rgb(127, 219, 202) // #7FDBCA - Teal
+    }
+}
+
 // ==================== Minimal Theme ====================
 
 /// Minimal color palette
@@ -837,6 +932,31 @@ mod tests {
     }
 
     #[test]
+    fn test_arctic_aurora_theme_colors() {
+        let theme = ArcticAuroraTheme;
+        // Accent colors (aurora)
+        assert!(matches!(theme.neon_pink(), Color::Rgb(201, 160, 220))); // Soft purple
+        assert!(matches!(theme.neon_cyan(), Color::Rgb(127, 219, 202))); // Teal
+        assert!(matches!(theme.neon_purple(), Color::Rgb(157, 142, 201))); // Purple
+        assert!(matches!(theme.neon_green(), Color::Rgb(163, 217, 165))); // Pale green
+        assert!(matches!(theme.neon_yellow(), Color::Rgb(240, 230, 140))); // Khaki
+        assert!(matches!(theme.neon_orange(), Color::Rgb(232, 184, 157))); // Salmon
+        assert!(matches!(theme.neon_blue(), Color::Rgb(135, 206, 235))); // Sky blue
+        // Background colors (deep night sky)
+        assert!(matches!(theme.bg_dark(), Color::Rgb(28, 35, 49))); // Deep navy
+        assert!(matches!(theme.bg_panel(), Color::Rgb(37, 45, 59)));
+        assert!(matches!(theme.bg_surface(), Color::Rgb(46, 56, 71)));
+        assert!(matches!(theme.bg_highlight(), Color::Rgb(58, 69, 86)));
+        // Text colors
+        assert!(matches!(theme.text_primary(), Color::Rgb(232, 238, 245))); // Snow white
+        assert!(matches!(theme.text_secondary(), Color::Rgb(184, 197, 214)));
+        assert!(matches!(theme.text_muted(), Color::Rgb(107, 122, 143)));
+        // Other colors
+        assert!(matches!(theme.error(), Color::Rgb(229, 115, 115))); // Soft red
+        assert!(matches!(theme.status_ended(), Color::Rgb(93, 107, 126)));
+    }
+
+    #[test]
     fn test_style_constructors() {
         let theme = CyberpunkTheme;
         // Ensure style constructors don't panic
@@ -880,6 +1000,14 @@ mod tests {
 
         let minimal = create_theme("minimal");
         assert!(matches!(minimal.bg_dark(), Color::Rgb(26, 26, 26)));
+
+        // Arctic Aurora theme can be selected by multiple names
+        let arctic = create_theme("arctic");
+        assert!(matches!(arctic.bg_dark(), Color::Rgb(28, 35, 49)));
+        let aurora = create_theme("aurora");
+        assert!(matches!(aurora.bg_dark(), Color::Rgb(28, 35, 49)));
+        let arctic_aurora = create_theme("arctic-aurora");
+        assert!(matches!(arctic_aurora.bg_dark(), Color::Rgb(28, 35, 49)));
 
         // Unknown theme defaults to Cyberpunk
         let unknown = create_theme("unknown");
