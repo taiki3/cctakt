@@ -93,6 +93,15 @@ enum FocusedPane {
     Right,
 }
 
+/// Input mode (vim-style)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    /// Navigation mode - hjkl moves between panes
+    Navigation,
+    /// Input mode - keys are sent to the focused agent
+    Input,
+}
+
 /// Review state for a completed agent
 struct ReviewState {
     /// Agent index being reviewed
@@ -185,6 +194,8 @@ struct App {
     mode: AppMode,
     /// Focused pane in split view
     focused_pane: FocusedPane,
+    /// Input mode (Navigation or Input)
+    input_mode: InputMode,
     /// Configuration
     config: Config,
     /// Worktree manager
@@ -242,6 +253,7 @@ impl App {
             content_cols: cols,
             mode: AppMode::Normal,
             focused_pane: FocusedPane::Right, // Default to worker pane
+            input_mode: InputMode::Input, // Default to input mode
             config,
             worktree_manager,
             github_client,
@@ -1740,8 +1752,8 @@ fn run_tui() -> Result<()> {
                                     // Enqueue merge (handled by MergeWorker)
                                     app.enqueue_merge();
                                 }
-                                KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('C') => {
-                                    // Cancel review
+                                KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('c') | KeyCode::Char('C') => {
+                                    // Cancel review (q to quit, c to cancel)
                                     app.cancel_review();
                                 }
                                 KeyCode::Up | KeyCode::Char('k') => {
@@ -1799,41 +1811,76 @@ fn run_tui() -> Result<()> {
                                 // No agents - orchestrator was closed, quit app
                                 app.should_quit = true;
                             } else {
-                                // Handle keybindings
+                                // Always handle global keybindings (Ctrl+Q, Ctrl+T, etc)
                                 let handled = handle_keybinding(&mut app, key.modifiers, key.code);
 
                                 if !handled {
-                                    // Forward to focused pane's agent PTY
-                                    let agent = match app.focused_pane {
-                                        FocusedPane::Left => app.agent_manager.get_interactive_mut(),
-                                        FocusedPane::Right => app.agent_manager.get_active_non_interactive_mut(),
-                                    };
-                                    if let Some(agent) = agent {
-                                        if agent.status == AgentStatus::Running {
-                                            match (key.modifiers, key.code) {
-                                                (KeyModifiers::CONTROL, KeyCode::Char(c)) => {
-                                                    let ctrl_char = (c as u8) & 0x1f;
-                                                    agent.send_bytes(&[ctrl_char]);
+                                    match app.input_mode {
+                                        InputMode::Navigation => {
+                                            // Navigation mode: hjkl for pane navigation
+                                            match key.code {
+                                                KeyCode::Char('h') => {
+                                                    app.focused_pane = FocusedPane::Left;
                                                 }
-                                                (_, KeyCode::Enter) => agent.send_bytes(b"\r"),
-                                                (_, KeyCode::Backspace) => agent.send_bytes(&[0x7f]),
-                                                (_, KeyCode::Tab) => agent.send_bytes(b"\t"),
-                                                (_, KeyCode::Esc) => agent.send_bytes(&[0x1b]),
-                                                (_, KeyCode::Up) => agent.send_bytes(b"\x1b[A"),
-                                                (_, KeyCode::Down) => agent.send_bytes(b"\x1b[B"),
-                                                (_, KeyCode::Right) => agent.send_bytes(b"\x1b[C"),
-                                                (_, KeyCode::Left) => agent.send_bytes(b"\x1b[D"),
-                                                (_, KeyCode::Home) => agent.send_bytes(b"\x1b[H"),
-                                                (_, KeyCode::End) => agent.send_bytes(b"\x1b[F"),
-                                                (_, KeyCode::PageUp) => agent.send_bytes(b"\x1b[5~"),
-                                                (_, KeyCode::PageDown) => agent.send_bytes(b"\x1b[6~"),
-                                                (_, KeyCode::Delete) => agent.send_bytes(b"\x1b[3~"),
-                                                (_, KeyCode::Char(c)) => {
-                                                    let mut buf = [0u8; 4];
-                                                    let s = c.encode_utf8(&mut buf);
-                                                    agent.send_bytes(s.as_bytes());
+                                                KeyCode::Char('l') => {
+                                                    app.focused_pane = FocusedPane::Right;
+                                                }
+                                                KeyCode::Char('j') => {
+                                                    if app.focused_pane == FocusedPane::Right {
+                                                        app.agent_manager.switch_to_next_worker();
+                                                    }
+                                                }
+                                                KeyCode::Char('k') => {
+                                                    if app.focused_pane == FocusedPane::Right {
+                                                        app.agent_manager.switch_to_prev_worker();
+                                                    }
+                                                }
+                                                KeyCode::Char('i') | KeyCode::Enter => {
+                                                    // Switch to input mode
+                                                    app.input_mode = InputMode::Input;
                                                 }
                                                 _ => {}
+                                            }
+                                        }
+                                        InputMode::Input => {
+                                            // Input mode: forward keys to focused agent
+                                            // Esc switches back to navigation mode
+                                            if key.code == KeyCode::Esc {
+                                                app.input_mode = InputMode::Navigation;
+                                            } else {
+                                                // Forward to focused pane's agent PTY
+                                                let agent = match app.focused_pane {
+                                                    FocusedPane::Left => app.agent_manager.get_interactive_mut(),
+                                                    FocusedPane::Right => app.agent_manager.get_active_non_interactive_mut(),
+                                                };
+                                                if let Some(agent) = agent {
+                                                    if agent.status == AgentStatus::Running {
+                                                        match (key.modifiers, key.code) {
+                                                            (KeyModifiers::CONTROL, KeyCode::Char(c)) => {
+                                                                let ctrl_char = (c as u8) & 0x1f;
+                                                                agent.send_bytes(&[ctrl_char]);
+                                                            }
+                                                            (_, KeyCode::Enter) => agent.send_bytes(b"\r"),
+                                                            (_, KeyCode::Backspace) => agent.send_bytes(&[0x7f]),
+                                                            (_, KeyCode::Tab) => agent.send_bytes(b"\t"),
+                                                            (_, KeyCode::Up) => agent.send_bytes(b"\x1b[A"),
+                                                            (_, KeyCode::Down) => agent.send_bytes(b"\x1b[B"),
+                                                            (_, KeyCode::Right) => agent.send_bytes(b"\x1b[C"),
+                                                            (_, KeyCode::Left) => agent.send_bytes(b"\x1b[D"),
+                                                            (_, KeyCode::Home) => agent.send_bytes(b"\x1b[H"),
+                                                            (_, KeyCode::End) => agent.send_bytes(b"\x1b[F"),
+                                                            (_, KeyCode::PageUp) => agent.send_bytes(b"\x1b[5~"),
+                                                            (_, KeyCode::PageDown) => agent.send_bytes(b"\x1b[6~"),
+                                                            (_, KeyCode::Delete) => agent.send_bytes(b"\x1b[3~"),
+                                                            (_, KeyCode::Char(c)) => {
+                                                                let mut buf = [0u8; 4];
+                                                                let s = c.encode_utf8(&mut buf);
+                                                                agent.send_bytes(s.as_bytes());
+                                                            }
+                                                            _ => {}
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -1853,8 +1900,8 @@ fn run_tui() -> Result<()> {
                                     app.pending_build_branch = None;
                                     app.mode = AppMode::Normal;
                                 }
-                                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                                    // Skip build
+                                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('q') => {
+                                    // Skip build (n for no, q to quit)
                                     app.pending_build_branch = None;
                                     app.mode = AppMode::Normal;
                                 }
@@ -1962,31 +2009,7 @@ fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> b
             app.agent_manager.switch_to(index);
             true
         }
-        // Vim-style pane navigation (no modifiers)
-        // h: Focus left pane (orchestrator)
-        (KeyModifiers::NONE, KeyCode::Char('h')) => {
-            app.focused_pane = FocusedPane::Left;
-            true
-        }
-        // l: Focus right pane (worker)
-        (KeyModifiers::NONE, KeyCode::Char('l')) => {
-            app.focused_pane = FocusedPane::Right;
-            true
-        }
-        // j: Next worker (when focused on right pane)
-        (KeyModifiers::NONE, KeyCode::Char('j')) => {
-            if app.focused_pane == FocusedPane::Right {
-                app.agent_manager.switch_to_next_worker();
-            }
-            true
-        }
-        // k: Previous worker (when focused on right pane)
-        (KeyModifiers::NONE, KeyCode::Char('k')) => {
-            if app.focused_pane == FocusedPane::Right {
-                app.agent_manager.switch_to_prev_worker();
-            }
-            true
-        }
+        // Note: hjkl pane navigation is handled in Navigation mode (see AppMode::Normal)
         _ => false,
     }
 }
@@ -2019,8 +2042,8 @@ fn handle_theme_picker_input(app: &mut App, code: KeyCode) {
             app.show_theme_picker = false;
             app.mode = AppMode::Normal;
         }
-        KeyCode::Esc | KeyCode::Char('q') => {
-            // Cancel
+        KeyCode::Char('q') => {
+            // Cancel (q to quit)
             app.show_theme_picker = false;
             app.mode = AppMode::Normal;
         }
@@ -2479,6 +2502,21 @@ fn render_footer(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             },
         ));
     }
+
+    // Add input mode indicator
+    left_spans.push(Span::styled(" | ", t.style_text_muted()));
+    let (mode_text, mode_style) = match app.input_mode {
+        InputMode::Navigation => ("NAV", t.style_warning()),
+        InputMode::Input => ("INS", t.style_success()),
+    };
+    left_spans.push(Span::styled(mode_text, mode_style));
+
+    // Add focused pane indicator
+    let pane_text = match app.focused_pane {
+        FocusedPane::Left => " [←]",
+        FocusedPane::Right => " [→]",
+    };
+    left_spans.push(Span::styled(pane_text, t.style_text_muted()));
 
     // Build right side: plan status (if any) and key bindings
     let mut right_spans: Vec<Span> = vec![];
