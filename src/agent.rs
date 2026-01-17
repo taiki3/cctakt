@@ -540,6 +540,11 @@ impl AgentManager {
         self.agents.get_mut(index)
     }
 
+    /// Get the number of agents
+    pub fn len(&self) -> usize {
+        self.agents.len()
+    }
+
     /// Switch to a specific agent by index
     pub fn switch_to(&mut self, index: usize) {
         if index < self.agents.len() {

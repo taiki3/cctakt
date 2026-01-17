@@ -99,6 +99,61 @@ struct ReviewState {
     conflicts: Vec<String>,
 }
 
+/// Merge task for the queue
+struct MergeTask {
+    /// Branch name to merge
+    branch: String,
+    /// Worktree path (for cleanup after merge)
+    worktree_path: PathBuf,
+    /// Agent index (for cleanup after merge)
+    agent_index: usize,
+    /// Task ID (for plan update)
+    task_id: Option<String>,
+}
+
+/// Merge queue for sequential merge processing
+struct MergeQueue {
+    /// Pending merge tasks
+    queue: std::collections::VecDeque<MergeTask>,
+    /// Currently processing task
+    current: Option<MergeTask>,
+    /// MergeWorker agent index (None if not spawned)
+    worker_agent_index: Option<usize>,
+}
+
+impl MergeQueue {
+    fn new() -> Self {
+        Self {
+            queue: std::collections::VecDeque::new(),
+            current: None,
+            worker_agent_index: None,
+        }
+    }
+
+    fn enqueue(&mut self, task: MergeTask) {
+        self.queue.push_back(task);
+    }
+
+    fn start_next(&mut self) -> Option<&MergeTask> {
+        if self.current.is_none() {
+            self.current = self.queue.pop_front();
+        }
+        self.current.as_ref()
+    }
+
+    fn complete_current(&mut self) {
+        self.current = None;
+    }
+
+    fn is_busy(&self) -> bool {
+        self.current.is_some()
+    }
+
+    fn pending_count(&self) -> usize {
+        self.queue.len() + if self.current.is_some() { 1 } else { 0 }
+    }
+}
+
 /// Notification message
 struct Notification {
     message: String,
@@ -142,6 +197,8 @@ struct App {
     prompt_delay_frames: u32,
     /// Pending review task ID to mark as completed after merge
     pending_review_task_id: Option<String>,
+    /// Merge queue for sequential merge processing
+    merge_queue: MergeQueue,
 }
 
 impl App {
@@ -176,6 +233,7 @@ impl App {
             pending_agent_prompt: None,
             prompt_delay_frames: 0,
             pending_review_task_id: None,
+            merge_queue: MergeQueue::new(),
         }
     }
 
@@ -402,62 +460,205 @@ impl App {
         self.mode = AppMode::ReviewMerge;
     }
 
-    /// Execute merge and cleanup
-    fn execute_merge(&mut self) -> Result<()> {
+    /// Enqueue merge task and start MergeWorker if needed
+    fn enqueue_merge(&mut self) {
         let review = self.review_state.take();
         let Some(review) = review else {
             self.mode = AppMode::Normal;
-            return Ok(());
+            return;
         };
 
-        let repo_path = env::current_dir().context("Failed to get current directory")?;
-        let merger = MergeManager::new(&repo_path);
+        let task = MergeTask {
+            branch: review.branch.clone(),
+            worktree_path: review.worktree_path.clone(),
+            agent_index: review.agent_index,
+            task_id: self.pending_review_task_id.take(),
+        };
 
-        // Perform merge
-        if let Err(e) = merger.merge_no_ff(&review.branch, None) {
-            // Abort the failed merge to clean up git state
-            let _ = merger.abort();
-            self.add_notification(
-                format!("Merge failed (aborted): {}", e),
-                cctakt::plan::NotifyLevel::Error,
-            );
-            self.mode = AppMode::Normal;
-            return Err(e);
+        let pending_count = self.merge_queue.pending_count();
+        self.merge_queue.enqueue(task);
+
+        self.add_notification(
+            format!(
+                "Merge queued: {} (pending: {})",
+                review.branch,
+                pending_count + 1
+            ),
+            cctakt::plan::NotifyLevel::Info,
+        );
+
+        self.mode = AppMode::Normal;
+
+        // Start processing if not already busy
+        self.process_merge_queue();
+    }
+
+    /// Process the next merge task in queue
+    fn process_merge_queue(&mut self) {
+        // Skip if already processing
+        if self.merge_queue.is_busy() {
+            return;
         }
 
-        // Notify success
+        // Get next task and clone branch name to avoid borrow issues
+        let branch = match self.merge_queue.start_next() {
+            Some(task) => task.branch.clone(),
+            None => return,
+        };
+
+        // Spawn MergeWorker
+        self.spawn_merge_worker(&branch);
+    }
+
+    /// Spawn MergeWorker to execute merge
+    fn spawn_merge_worker(&mut self, branch: &str) {
+        let repo_path = match env::current_dir() {
+            Ok(p) => p,
+            Err(e) => {
+                self.add_notification(
+                    format!("Failed to get current directory: {e}"),
+                    cctakt::plan::NotifyLevel::Error,
+                );
+                self.merge_queue.complete_current();
+                return;
+            }
+        };
+
+        let task_description = format!(
+            "mainブランチに {} をマージしてください。\n\n\
+             手順:\n\
+             1. git checkout main\n\
+             2. git pull origin main (最新を取得)\n\
+             3. git merge --no-ff {}\n\
+             4. コンフリクトがあれば解決してコミット\n\n\
+             重要: マージコミットを必ず作成してください。",
+            branch, branch
+        );
+
+        match self.agent_manager.add_non_interactive(
+            "merge-worker".to_string(),
+            repo_path,
+            &task_description,
+            Some(10), // max_turns: enough for conflict resolution
+        ) {
+            Ok(agent_id) => {
+                // Find the agent index (it's the last one added)
+                let agent_index = self.agent_manager.len() - 1;
+                self.merge_queue.worker_agent_index = Some(agent_index);
+                self.add_notification(
+                    format!("MergeWorker started (agent {})", agent_id),
+                    cctakt::plan::NotifyLevel::Info,
+                );
+            }
+            Err(e) => {
+                self.add_notification(
+                    format!("Failed to start MergeWorker: {e}"),
+                    cctakt::plan::NotifyLevel::Error,
+                );
+                self.merge_queue.complete_current();
+            }
+        }
+    }
+
+    /// Check MergeWorker completion and handle result
+    fn check_merge_worker_completion(&mut self) {
+        let Some(worker_idx) = self.merge_queue.worker_agent_index else {
+            return;
+        };
+
+        let Some(agent) = self.agent_manager.get(worker_idx) else {
+            return;
+        };
+
+        if agent.status != AgentStatus::Ended {
+            return;
+        }
+
+        // Get current task info before processing
+        let task = match self.merge_queue.current.take() {
+            Some(t) => t,
+            None => return,
+        };
+
+        // Check merge result by looking at git log
+        let repo_path = match env::current_dir() {
+            Ok(p) => p,
+            Err(_) => {
+                self.handle_merge_failure(&task);
+                self.merge_queue.worker_agent_index = None;
+                self.process_merge_queue();
+                return;
+            }
+        };
+
+        // Check if branch was merged by looking for the branch in git log
+        let merged = std::process::Command::new("git")
+            .args(["log", "--oneline", "-1", "--grep", &format!("Merge branch '{}'", task.branch)])
+            .current_dir(&repo_path)
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false);
+
+        if merged {
+            self.handle_merge_success(&task);
+        } else {
+            self.handle_merge_failure(&task);
+        }
+
+        // Close MergeWorker agent
+        self.agent_manager.close(worker_idx);
+        self.merge_queue.worker_agent_index = None;
+
+        // Process next task
+        self.process_merge_queue();
+    }
+
+    /// Handle successful merge
+    fn handle_merge_success(&mut self, task: &MergeTask) {
         self.add_notification(
-            format!("Merged {} into main", review.branch),
+            format!("Merged: {} → main", task.branch),
             cctakt::plan::NotifyLevel::Success,
         );
 
         // Remove worktree
         if let Some(ref wt_manager) = self.worktree_manager {
-            let _ = wt_manager.remove(&review.worktree_path);
+            let _ = wt_manager.remove(&task.worktree_path);
         }
 
-        // Close the agent (if associated)
-        if review.agent_index != usize::MAX {
-            self.agent_manager.close(review.agent_index);
-            if review.agent_index < self.agent_issues.len() {
-                self.agent_issues.remove(review.agent_index);
+        // Close the original worker agent (if associated)
+        if task.agent_index != usize::MAX {
+            self.agent_manager.close(task.agent_index);
+            if task.agent_index < self.agent_issues.len() {
+                self.agent_issues.remove(task.agent_index);
             }
-            if review.agent_index < self.agent_worktrees.len() {
-                self.agent_worktrees.remove(review.agent_index);
+            if task.agent_index < self.agent_worktrees.len() {
+                self.agent_worktrees.remove(task.agent_index);
             }
         }
 
-        // Mark pending review task as completed
-        if let Some(task_id) = self.pending_review_task_id.take() {
+        // Mark task as completed
+        if let Some(ref task_id) = task.task_id {
             if let Some(ref mut plan) = self.current_plan {
-                plan.update_status(&task_id, TaskStatus::Completed);
-                // Save plan to notify orchestrator
+                plan.update_status(task_id, TaskStatus::Completed);
                 let _ = self.plan_manager.save(plan);
             }
         }
+    }
 
-        self.mode = AppMode::Normal;
-        Ok(())
+    /// Handle failed merge
+    fn handle_merge_failure(&mut self, task: &MergeTask) {
+        self.add_notification(
+            format!("Merge failed: {} (MergeWorker could not complete)", task.branch),
+            cctakt::plan::NotifyLevel::Error,
+        );
+
+        // Mark task as failed
+        if let Some(ref task_id) = task.task_id {
+            if let Some(ref mut plan) = self.current_plan {
+                plan.mark_failed(task_id, "MergeWorker could not complete merge");
+                let _ = self.plan_manager.save(plan);
+            }
+        }
     }
 
     /// Cancel review and return to normal mode
@@ -1379,8 +1580,8 @@ fn run_tui() -> Result<()> {
                             // Handle review mode input
                             match key.code {
                                 KeyCode::Enter | KeyCode::Char('m') | KeyCode::Char('M') => {
-                                    // Execute merge
-                                    let _ = app.execute_merge();
+                                    // Enqueue merge (handled by MergeWorker)
+                                    app.enqueue_merge();
                                 }
                                 KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('C') => {
                                     // Cancel review
@@ -1496,6 +1697,10 @@ fn run_tui() -> Result<()> {
         app.check_plan();
         app.check_agent_task_completions();
         app.process_plan();
+
+        // Check MergeWorker completion
+        app.check_merge_worker_completion();
+
         app.cleanup_notifications();
 
         // Check if active agent just ended and has a worktree (for review)
