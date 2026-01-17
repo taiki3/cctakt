@@ -3,7 +3,7 @@
 //! Provides a status bar widget that displays the status of all agents
 //! in a compact format at the bottom of the screen.
 
-use crate::theme::Theme;
+use crate::theme::theme;
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -39,10 +39,10 @@ impl AgentStatusKind {
     /// Get the color for this status
     fn color(&self) -> Color {
         match self {
-            AgentStatusKind::Running => Theme::STATUS_RUNNING,
-            AgentStatusKind::Idle => Theme::STATUS_IDLE,
-            AgentStatusKind::Ended => Theme::STATUS_ENDED,
-            AgentStatusKind::Error => Theme::STATUS_ERROR,
+            AgentStatusKind::Running => theme().status_running(),
+            AgentStatusKind::Idle => theme().status_idle(),
+            AgentStatusKind::Ended => theme().status_ended(),
+            AgentStatusKind::Error => theme().status_error(),
         }
     }
 
@@ -122,20 +122,22 @@ impl StatusBar {
     ///
     /// The status bar displays all agents in a single line with their status indicators.
     pub fn render(&self, f: &mut Frame, area: Rect) {
+        let t = theme();
+
         if self.agents.is_empty() {
             // Show empty state
             let empty = Paragraph::new(Line::from(vec![
                 Span::styled(
                     "\u{2500}".repeat(3), // ───
-                    Style::default().fg(Theme::BORDER_SECONDARY),
+                    Style::default().fg(t.border_secondary()),
                 ),
                 Span::styled(
                     " No agents running ",
-                    Style::default().fg(Theme::TEXT_MUTED),
+                    Style::default().fg(t.text_muted()),
                 ),
                 Span::styled(
                     "\u{2500}".repeat(area.width.saturating_sub(25) as usize),
-                    Style::default().fg(Theme::BORDER_SECONDARY),
+                    Style::default().fg(t.border_secondary()),
                 ),
             ]));
             f.render_widget(empty, area);
@@ -147,24 +149,24 @@ impl StatusBar {
         // Separator at start
         spans.push(Span::styled(
             "\u{2500} ", // ─
-            Style::default().fg(Theme::BORDER_SECONDARY),
+            Style::default().fg(t.border_secondary()),
         ));
 
         for (idx, agent) in self.agents.iter().enumerate() {
             if idx > 0 {
                 spans.push(Span::styled(
                     "  ",
-                    Style::default().fg(Theme::BORDER_SECONDARY),
+                    Style::default().fg(t.border_secondary()),
                 ));
             }
 
             // Agent number with bracket
             let bracket_style = if agent.is_active {
                 Style::default()
-                    .fg(Theme::NEON_CYAN)
+                    .fg(t.neon_cyan())
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Theme::TEXT_MUTED)
+                Style::default().fg(t.text_muted())
             };
 
             spans.push(Span::styled("[", bracket_style));
@@ -174,10 +176,10 @@ impl StatusBar {
             // Agent name
             let name_style = if agent.is_active {
                 Style::default()
-                    .fg(Theme::TEXT_PRIMARY)
+                    .fg(t.text_primary())
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Theme::TEXT_SECONDARY)
+                Style::default().fg(t.text_secondary())
             };
 
             // Truncate name if too long
@@ -212,7 +214,7 @@ impl StatusBar {
         if remaining > 0 {
             spans.push(Span::styled(
                 format!(" {}", "\u{2500}".repeat(remaining as usize)),
-                Style::default().fg(Theme::BORDER_SECONDARY),
+                Style::default().fg(t.border_secondary()),
             ));
         }
 
@@ -230,7 +232,6 @@ impl Default for StatusBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::Theme;
 
     #[test]
     fn test_statusbar_new() {
@@ -267,10 +268,11 @@ mod tests {
 
     #[test]
     fn test_status_kind_color() {
-        assert_eq!(AgentStatusKind::Running.color(), Theme::STATUS_RUNNING);
-        assert_eq!(AgentStatusKind::Idle.color(), Theme::STATUS_IDLE);
-        assert_eq!(AgentStatusKind::Ended.color(), Theme::STATUS_ENDED);
-        assert_eq!(AgentStatusKind::Error.color(), Theme::STATUS_ERROR);
+        let t = theme();
+        assert_eq!(AgentStatusKind::Running.color(), t.status_running());
+        assert_eq!(AgentStatusKind::Idle.color(), t.status_idle());
+        assert_eq!(AgentStatusKind::Ended.color(), t.status_ended());
+        assert_eq!(AgentStatusKind::Error.color(), t.status_error());
     }
 
     #[test]

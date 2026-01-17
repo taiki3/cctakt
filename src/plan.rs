@@ -402,7 +402,7 @@ impl PlanManager {
         }
 
         let content = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read plan file: {:?}", path))?;
+            .with_context(|| format!("Failed to read plan file: {path:?}"))?;
 
         let plan: Plan = serde_json::from_str(&content)
             .with_context(|| "Failed to parse plan file")?;
@@ -424,7 +424,7 @@ impl PlanManager {
             .context("Failed to serialize plan")?;
 
         fs::write(&path, content)
-            .with_context(|| format!("Failed to write plan file: {:?}", path))?;
+            .with_context(|| format!("Failed to write plan file: {path:?}"))?;
 
         // Update last modified time
         if let Ok(metadata) = fs::metadata(&path) {
@@ -443,7 +443,7 @@ impl PlanManager {
 
         if let Ok(metadata) = fs::metadata(&path) {
             if let Ok(modified) = metadata.modified() {
-                return self.last_modified.map_or(true, |last| modified > last);
+                return self.last_modified.is_none_or(|last| modified > last);
             }
         }
 
@@ -455,7 +455,7 @@ impl PlanManager {
         let path = self.plan_file();
         if path.exists() {
             fs::remove_file(&path)
-                .with_context(|| format!("Failed to remove plan file: {:?}", path))?;
+                .with_context(|| format!("Failed to remove plan file: {path:?}"))?;
         }
         self.last_modified = None;
         Ok(())
@@ -955,7 +955,7 @@ mod tests {
                 level,
             };
             let json = serde_json::to_string(&action).unwrap();
-            assert!(json.contains(expected), "Expected {} in {}", expected, json);
+            assert!(json.contains(expected), "Expected {expected} in {json}");
         }
     }
 
@@ -1480,7 +1480,7 @@ mod proptests {
         fn terminal_status_plan_complete(tasks_count in 1usize..10) {
             let mut plan = Plan::new();
             for i in 0..tasks_count {
-                let mut task = Task::notify(format!("t-{}", i), "Test");
+                let mut task = Task::notify(format!("t-{i}"), "Test");
                 // Randomly assign terminal status
                 task.status = match i % 3 {
                     0 => TaskStatus::Completed,

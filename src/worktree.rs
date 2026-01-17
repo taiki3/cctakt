@@ -193,7 +193,7 @@ impl WorktreeManager {
     pub fn branch_exists(&self, branch: &str) -> Result<bool> {
         let output = Command::new("git")
             .current_dir(&self.repo_path)
-            .args(["rev-parse", "--verify", &format!("refs/heads/{}", branch)])
+            .args(["rev-parse", "--verify", &format!("refs/heads/{branch}")])
             .output()
             .context("Failed to execute git rev-parse")?;
 
@@ -209,7 +209,7 @@ impl WorktreeManager {
 
         let mut counter = 2;
         loop {
-            let candidate = format!("{}-{}", base_name, counter);
+            let candidate = format!("{base_name}-{counter}");
             if !self.branch_exists(&candidate)? {
                 return Ok(candidate);
             }
@@ -218,8 +218,7 @@ impl WorktreeManager {
             // 無限ループ防止
             if counter > 1000 {
                 return Err(anyhow::anyhow!(
-                    "Failed to generate unique branch name for: {}",
-                    base_name
+                    "Failed to generate unique branch name for: {base_name}"
                 ));
             }
         }

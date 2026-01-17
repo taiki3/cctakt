@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "created_at": 0,
+  "description": "カラーテーマの変更機能を実装する",
+  "tasks": [
+    {
+      "id": "worker-theme-system",
+      "action": {
+        "type": "create_worker",
+        "branch": "feat/theme-switching",
+        "task_description": "カラーテーマの切り替え機能を実装する。\n\n## 概要\n現在のCyberpunkテーマに加え、複数のテーマから選択できるようにする。\n\n## 実装内容\n\n### 1. テーマトレイト定義 (src/theme.rs)\n\n既存の`CyberpunkTheme`をトレイトベースに変更：\n\n```rust\npub trait ColorTheme: Send + Sync {\n    // ネオンカラー\n    fn neon_pink(&self) -> Color;\n    fn neon_cyan(&self) -> Color;\n    fn neon_purple(&self) -> Color;\n    fn neon_green(&self) -> Color;\n    fn neon_yellow(&self) -> Color;\n    fn neon_orange(&self) -> Color;\n    fn neon_blue(&self) -> Color;\n    \n    // 背景色\n    fn bg_dark(&self) -> Color;\n    fn bg_panel(&self) -> Color;\n    fn bg_surface(&self) -> Color;\n    fn bg_highlight(&self) -> Color;\n    \n    // テキスト色\n    fn text_primary(&self) -> Color;\n    fn text_secondary(&self) -> Color;\n    fn text_muted(&self) -> Color;\n    \n    // セマンティック色\n    fn success(&self) -> Color;\n    fn error(&self) -> Color;\n    fn warning(&self) -> Color;\n    fn info(&self) -> Color;\n    \n    // エージェント状態色\n    fn status_running(&self) -> Color;\n    fn status_idle(&self) -> Color;\n    fn status_ended(&self) -> Color;\n    fn status_error(&self) -> Color;\n    \n    // ボーダー色\n    fn border_primary(&self) -> Color;\n    fn border_secondary(&self) -> Color;\n    fn border_active(&self) -> Color;\n    \n    // 差分色\n    fn diff_add_bg(&self) -> Color;\n    fn diff_del_bg(&self) -> Color;\n    fn diff_addition(&self) -> Color;\n    fn diff_deletion(&self) -> Color;\n    fn diff_context(&self) -> Color;\n    fn diff_hunk_header(&self) -> Color;\n    fn diff_file_header(&self) -> Color;\n    \n    // UI要素色\n    fn tab_active_bg(&self) -> Color;\n    fn tab_active_fg(&self) -> Color;\n    fn selected_bg(&self) -> Color;\n    fn cursor_bg(&self) -> Color;\n    fn cursor_fg(&self) -> Color;\n    \n    // スタイルメソッド（デフォルト実装を提供）\n    fn style_tab_active(&self) -> Style { ... }\n    fn style_tab_inactive(&self) -> Style { ... }\n    fn style_border(&self) -> Style { ... }\n    // ... 他のスタイルメソッド\n}\n```\n\n### 2. テーマ実装\n\n複数のテーマを実装：\n\n```rust\n// 既存テーマ\npub struct CyberpunkTheme;\nimpl ColorTheme for CyberpunkTheme { ... }\n\n// 新規テーマ\npub struct MonokaiTheme;\nimpl ColorTheme for MonokaiTheme { ... }\n\npub struct DraculaTheme;\nimpl ColorTheme for DraculaTheme { ... }\n\npub struct NordTheme;\nimpl ColorTheme for NordTheme { ... }\n\npub struct MinimalTheme;  // 落ち着いた色調\nimpl ColorTheme for MinimalTheme { ... }\n```\n\n### 3. グローバルテーマアクセス\n\n```rust\nuse std::sync::OnceLock;\n\nstatic CURRENT_THEME: OnceLock<Box<dyn ColorTheme>> = OnceLock::new();\n\npub fn theme() -> &'static dyn ColorTheme {\n    CURRENT_THEME.get().map(|t| t.as_ref()).unwrap_or(&CyberpunkTheme)\n}\n\npub fn set_theme(theme: Box<dyn ColorTheme>) {\n    let _ = CURRENT_THEME.set(theme);\n}\n```\n\n### 4. 設定ファイル対応 (src/config.rs)\n\n```rust\n#[derive(Deserialize, Default)]\npub struct Config {\n    // 既存フィールド...\n    #[serde(default = \"default_theme\")]\n    pub theme: String,  // \"cyberpunk\", \"monokai\", \"dracula\", \"nord\", \"minimal\"\n}\n\nfn default_theme() -> String {\n    \"cyberpunk\".to_string()\n}\n```\n\n### 5. UIコンポーネントの更新\n\n以下のファイルで `Theme::` 定数アクセスを `theme().` メソッド呼び出しに変更：\n- src/main.rs\n- src/statusbar.rs\n- src/diffview.rs\n- src/dialog.rs\n- src/issue_picker.rs\n\n例：\n```rust\n// Before\nlet color = Theme::NEON_PINK;\nlet style = Theme::style_tab_active();\n\n// After\nlet color = theme().neon_pink();\nlet style = theme().style_tab_active();\n```\n\n### 6. テーマ初期化 (src/main.rs)\n\n```rust\nfn main() {\n    let config = Config::load();\n    \n    let theme: Box<dyn ColorTheme> = match config.theme.as_str() {\n        \"monokai\" => Box::new(MonokaiTheme),\n        \"dracula\" => Box::new(DraculaTheme),\n        \"nord\" => Box::new(NordTheme),\n        \"minimal\" => Box::new(MinimalTheme),\n        _ => Box::new(CyberpunkTheme),\n    };\n    set_theme(theme);\n    \n    // ... アプリケーション起動\n}\n```\n\n## テーマカラー参考\n\n### Monokai\n- 背景: #272822\n- ピンク: #F92672\n- 緑: #A6E22E\n- 青: #66D9EF\n- 紫: #AE81FF\n- オレンジ: #FD971F\n- 黄: #E6DB74\n\n### Dracula\n- 背景: #282A36\n- ピンク: #FF79C6\n- 緑: #50FA7B\n- シアン: #8BE9FD\n- 紫: #BD93F9\n- オレンジ: #FFB86C\n- 黄: #F1FA8C\n- 赤: #FF5555\n\n### Nord\n- 背景: #2E3440\n- 青: #5E81AC, #81A1C1, #88C0D0, #8FBCBB\n- 赤: #BF616A\n- オレンジ: #D08770\n- 黄: #EBCB8B\n- 緑: #A3BE8C\n- 紫: #B48EAD\n\n### Minimal (ダークグレー基調)\n- 背景: #1a1a1a\n- テキスト: #e0e0e0\n- アクセント: #4a9eff (控えめな青)\n- 成功: #4caf50\n- エラー: #f44336\n- 警告: #ff9800\n\n## 参照ファイル\n- src/theme.rs: テーマ定義（全面改修）\n- src/config.rs: 設定ファイル\n- src/main.rs: テーマ初期化、UIレンダリング\n- src/statusbar.rs: ステータスバー\n- src/diffview.rs: 差分表示\n- src/dialog.rs: ダイアログ\n- src/issue_picker.rs: Issue選択\n\n## 注意事項\n- 既存の`Theme::` 参照箇所をすべて `theme().` に変更すること\n- 後方互換性のため `type Theme = CyberpunkTheme;` は残してもよい（deprecated警告付き）\n- cargo clippyでwarningが出ないようにすること\n- テストも更新すること",
+        "base_branch": null
+      },
+      "status": "completed",
+      "error": null,
+      "updated_at": 1768660460,
+      "result": {
+        "commits": [
+          "233e37b feat: Add CLI run command for debugging workers",
+          "b5560cd fix: Properly handle worker errors and warn on empty commits",
+          "e9791fe feat: Continue orchestrator conversation on restart",
+          "c582b48 fix: Handle both upper and lower case for Ctrl key bindings",
+          "d3ab607 fix: Improve worker state management and disable manual agent creation",
+          "e73d2ab feat: Add hybrid agent mode (orchestrator PTY + worker stream-json)",
+          "6f20670 docs: Add Claude Code reference documentation",
+          "a1e83d0 Merge branch 'cctakt/issue-3-カラーテーマの実装-4'",
+          "2e8d66a feat: Add autonomous agent workflow with completion detection",
+          "5baf19c feat: Add cyberpunk color theme"
+        ],
+        "pr_number": null,
+        "pr_url": null
+      }
+    }
+  ]
+}

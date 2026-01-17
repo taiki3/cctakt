@@ -3,7 +3,7 @@
 //! Provides a scrollable diff viewer widget for reviewing changes
 //! before merging branches.
 
-use crate::theme::Theme;
+use crate::theme::theme;
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
@@ -65,21 +65,23 @@ enum DiffLineType {
 impl DiffLineType {
     /// Get the foreground color for this line type
     fn color(&self) -> Color {
+        let t = theme();
         match self {
-            DiffLineType::Context => Theme::DIFF_CONTEXT,
-            DiffLineType::Addition => Theme::DIFF_ADDITION,
-            DiffLineType::Deletion => Theme::DIFF_DELETION,
-            DiffLineType::HunkHeader => Theme::DIFF_HUNK_HEADER,
-            DiffLineType::FileHeader => Theme::DIFF_FILE_HEADER,
-            DiffLineType::Empty => Theme::TEXT_PRIMARY,
+            DiffLineType::Context => t.diff_context(),
+            DiffLineType::Addition => t.diff_addition(),
+            DiffLineType::Deletion => t.diff_deletion(),
+            DiffLineType::HunkHeader => t.diff_hunk_header(),
+            DiffLineType::FileHeader => t.diff_file_header(),
+            DiffLineType::Empty => t.text_primary(),
         }
     }
 
     /// Get the background color for this line type (if any)
     fn bg_color(&self) -> Option<Color> {
+        let t = theme();
         match self {
-            DiffLineType::Addition => Some(Theme::DIFF_ADD_BG),
-            DiffLineType::Deletion => Some(Theme::DIFF_DEL_BG),
+            DiffLineType::Addition => Some(t.diff_add_bg()),
+            DiffLineType::Deletion => Some(t.diff_del_bg()),
             _ => None,
         }
     }
@@ -162,6 +164,8 @@ impl DiffView {
 
     /// Render the diff view
     pub fn render(&self, f: &mut Frame, area: Rect) {
+        let t = theme();
+
         // Calculate content area (excluding borders)
         let content_height = area.height.saturating_sub(4) as usize; // borders + help line
 
@@ -170,7 +174,7 @@ impl DiffView {
         let block = Block::default()
             .title(format!(" {title} "))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Theme::BORDER_PRIMARY));
+            .border_style(Style::default().fg(t.border_primary()));
 
         // Build styled lines
         let visible_lines: Vec<Line> = self
@@ -194,31 +198,31 @@ impl DiffView {
         let help_line = Line::from(vec![
             Span::styled(
                 "[",
-                Style::default().fg(Theme::TEXT_MUTED),
+                Style::default().fg(t.text_muted()),
             ),
             Span::styled(
                 "\u{2191}/\u{2193}",
-                Style::default().fg(Theme::KEY_BINDING),
+                Style::default().fg(t.key_binding()),
             ),
             Span::styled(
                 "] Scroll  ",
-                Style::default().fg(Theme::TEXT_MUTED),
+                Style::default().fg(t.text_muted()),
             ),
             Span::styled(
                 "[Enter]",
-                Theme::style_success(),
+                t.style_success(),
             ),
             Span::styled(
                 " Merge  ",
-                Style::default().fg(Theme::TEXT_MUTED),
+                Style::default().fg(t.text_muted()),
             ),
             Span::styled(
                 "[Esc]",
-                Theme::style_error(),
+                t.style_error(),
             ),
             Span::styled(
                 " Cancel",
-                Style::default().fg(Theme::TEXT_MUTED),
+                Style::default().fg(t.text_muted()),
             ),
         ]);
 
@@ -341,7 +345,6 @@ fn style_diff_line(line: &DiffLine) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::Theme;
 
     #[test]
     fn test_diffview_new() {
@@ -360,7 +363,7 @@ mod tests {
 
     #[test]
     fn test_diffview_scroll_down() {
-        let diff = (0..100).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let diff = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let mut view = DiffView::new(diff);
 
         assert_eq!(view.scroll_position(), 0);
@@ -374,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_diffview_scroll_up() {
-        let diff = (0..100).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let diff = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let mut view = DiffView::new(diff);
 
         view.scroll_down(50);
@@ -389,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_diffview_scroll_to_top_bottom() {
-        let diff = (0..100).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let diff = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let mut view = DiffView::new(diff);
 
         view.scroll_down(50);
@@ -425,11 +428,12 @@ mod tests {
 
     #[test]
     fn test_diff_line_type_color() {
-        assert_eq!(DiffLineType::Context.color(), Theme::DIFF_CONTEXT);
-        assert_eq!(DiffLineType::Addition.color(), Theme::DIFF_ADDITION);
-        assert_eq!(DiffLineType::Deletion.color(), Theme::DIFF_DELETION);
-        assert_eq!(DiffLineType::HunkHeader.color(), Theme::DIFF_HUNK_HEADER);
-        assert_eq!(DiffLineType::FileHeader.color(), Theme::DIFF_FILE_HEADER);
+        let t = theme();
+        assert_eq!(DiffLineType::Context.color(), t.diff_context());
+        assert_eq!(DiffLineType::Addition.color(), t.diff_addition());
+        assert_eq!(DiffLineType::Deletion.color(), t.diff_deletion());
+        assert_eq!(DiffLineType::HunkHeader.color(), t.diff_hunk_header());
+        assert_eq!(DiffLineType::FileHeader.color(), t.diff_file_header());
     }
 
     #[test]
@@ -443,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_page_up_down() {
-        let diff = (0..100).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let diff = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let mut view = DiffView::new(diff);
 
         view.page_down(20);
