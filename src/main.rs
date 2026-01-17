@@ -415,8 +415,10 @@ impl App {
 
         // Perform merge
         if let Err(e) = merger.merge_no_ff(&review.branch, None) {
+            // Abort the failed merge to clean up git state
+            let _ = merger.abort();
             self.add_notification(
-                format!("Merge failed: {}", e),
+                format!("Merge failed (aborted): {}", e),
                 cctakt::plan::NotifyLevel::Error,
             );
             self.mode = AppMode::Normal;
