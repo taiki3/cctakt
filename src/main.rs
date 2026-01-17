@@ -423,6 +423,12 @@ impl App {
             return Err(e);
         }
 
+        // Notify success
+        self.add_notification(
+            format!("Merged {} into main", review.branch),
+            cctakt::plan::NotifyLevel::Success,
+        );
+
         // Remove worktree
         if let Some(ref wt_manager) = self.worktree_manager {
             let _ = wt_manager.remove(&review.worktree_path);
