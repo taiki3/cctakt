@@ -3,9 +3,9 @@ mod agent;
 use agent::{AgentManager, AgentStatus};
 use anyhow::{Context, Result};
 use cctakt::{
-    issue_picker::centered_rect, render_task, suggest_branch_name, Config, DiffView, GitHubClient,
-    Issue, IssuePicker, IssuePickerResult, MergeManager, Plan, PlanManager, TaskAction, TaskResult,
-    TaskStatus, Theme, WorktreeManager,
+    debug, issue_picker::centered_rect, render_task, suggest_branch_name, Config, DiffView,
+    GitHubClient, Issue, IssuePicker, IssuePickerResult, MergeManager, Plan, PlanManager,
+    TaskAction, TaskResult, TaskStatus, Theme, WorktreeManager,
 };
 use clap::{Parser, Subcommand};
 use crossterm::{
@@ -688,7 +688,10 @@ impl App {
         // Create worktree
         let (working_dir, worktree_path) = if let Some(ref wt_manager) = self.worktree_manager {
             match wt_manager.create(branch, &self.config.worktree_dir) {
-                Ok(path) => (path.clone(), Some(path)),
+                Ok(path) => {
+                    debug::log_worktree("created", &path);
+                    (path.clone(), Some(path))
+                }
                 Err(e) => {
                     self.mark_task_failed(task_id, &format!("Failed to create worktree: {}", e));
                     return;
@@ -718,6 +721,7 @@ impl App {
                 self.agent_worktrees.push(worktree_path);
                 self.task_agents.insert(task_id.to_string(), agent_index);
 
+                debug::log_task(task_id, "pending", "running");
                 self.add_notification(
                     format!("Worker started: {}", name),
                     cctakt::plan::NotifyLevel::Success,
@@ -886,6 +890,7 @@ impl App {
         for (task_id, agent_index, error) in ended {
             if let Some(error_msg) = error {
                 // Agent ended with error - mark task as failed
+                debug::log_task(&task_id, "running", "failed");
                 self.add_notification(
                     format!("Worker failed: {}", error_msg),
                     cctakt::plan::NotifyLevel::Error,
@@ -922,6 +927,7 @@ impl App {
                 if let Some(ref mut plan) = self.current_plan {
                     plan.mark_completed(&task_id, result);
                 }
+                debug::log_task(&task_id, "running", "completed");
             }
             self.task_agents.remove(&task_id);
         }
@@ -2123,6 +2129,9 @@ fn format_json_event(json: &serde_json::Value) -> Line<'static> {
 // ==================== Main Entry Point ====================
 
 fn main() -> Result<()> {
+    // Initialize debug logging (only in debug builds)
+    debug::init();
+
     let cli = Cli::parse();
 
     match cli.command {

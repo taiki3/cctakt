@@ -31,6 +31,7 @@
 pub mod worktree;
 pub mod plan;
 pub mod stream_parser;
+pub mod debug;
 
 // UI Components
 pub mod dialog;

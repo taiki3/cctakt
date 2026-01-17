@@ -14,6 +14,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use cctakt::stream_parser::{StreamEvent, StreamParser};
+use cctakt::debug;
 
 /// Agent execution mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,10 +204,14 @@ impl Agent {
         // Spawn output reading thread
         let parser_clone = Arc::clone(&parser);
         let output_buffer_clone = Arc::clone(&output_buffer);
+        let worker_name = name.clone();
         let output_thread = std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 if let Ok(line) = line {
+                    // Log raw stream-json output in debug builds
+                    debug::log_worker(&worker_name, "stream", &line);
+
                     if let Ok(mut p) = parser_clone.lock() {
                         p.feed(&format!("{}\n", line));
                     }
@@ -216,6 +221,7 @@ impl Agent {
                     }
                 }
             }
+            debug::log_worker(&worker_name, "EOF", "stdout closed");
         });
 
         // Spawn stderr reading thread
