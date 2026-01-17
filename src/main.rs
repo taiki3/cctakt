@@ -403,6 +403,7 @@ impl App {
     fn execute_merge(&mut self) -> Result<()> {
         let review = self.review_state.take();
         let Some(review) = review else {
+            self.mode = AppMode::Normal;
             return Ok(());
         };
 
@@ -410,7 +411,14 @@ impl App {
         let merger = MergeManager::new(&repo_path);
 
         // Perform merge
-        merger.merge_no_ff(&review.branch, None)?;
+        if let Err(e) = merger.merge_no_ff(&review.branch, None) {
+            self.add_notification(
+                format!("Merge failed: {}", e),
+                cctakt::plan::NotifyLevel::Error,
+            );
+            self.mode = AppMode::Normal;
+            return Err(e);
+        }
 
         // Remove worktree
         if let Some(ref wt_manager) = self.worktree_manager {
