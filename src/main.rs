@@ -857,6 +857,11 @@ impl App {
             })
             .collect();
 
+        // Persist changes if any orphaned tasks were recovered
+        if !notifications.is_empty() {
+            self.save_plan();
+        }
+
         // Add notifications after releasing plan borrow
         for msg in notifications {
             self.add_notification(msg, cctakt::plan::NotifyLevel::Warning);
@@ -865,10 +870,11 @@ impl App {
 
     /// Execute a task by ID
     fn execute_task(&mut self, task_id: &str) {
-        // Mark task as running
+        // Mark task as running and persist
         if let Some(ref mut plan) = self.current_plan {
             plan.update_status(task_id, TaskStatus::Running);
         }
+        self.save_plan();
 
         // Get task action (clone to avoid borrow issues)
         let task_action = self
@@ -912,6 +918,7 @@ impl App {
                 if let Some(ref mut plan) = self.current_plan {
                     plan.update_status(task_id, TaskStatus::Completed);
                 }
+                self.save_plan();
             }
             TaskAction::RequestReview { branch, after_task } => {
                 self.execute_request_review(task_id, &branch, after_task.as_deref());
@@ -941,6 +948,7 @@ impl App {
                 if let Some(ref mut plan) = self.current_plan {
                     plan.update_status(task_id, TaskStatus::Pending);
                 }
+                self.save_plan();
                 return;
             }
         }
@@ -1108,6 +1116,9 @@ impl App {
                 };
                 if let Some(ref mut plan) = self.current_plan {
                     plan.mark_completed(task_id, result);
+                    if let Err(e) = self.plan_manager.save(plan) {
+                        debug::log(&format!("Failed to save plan: {e}"));
+                    }
                 }
             }
             Err(e) => {
@@ -1142,6 +1153,7 @@ impl App {
                 if let Some(ref mut plan) = self.current_plan {
                     plan.update_status(task_id, TaskStatus::Completed);
                 }
+                self.save_plan();
             }
             Err(e) => {
                 self.mark_task_failed(task_id, &format!("Failed to merge: {e}"));
@@ -1162,6 +1174,7 @@ impl App {
                     if let Some(ref mut plan) = self.current_plan {
                         plan.update_status(task_id, TaskStatus::Completed);
                     }
+                    self.save_plan();
                 }
                 Err(e) => {
                     self.mark_task_failed(task_id, &format!("Failed to cleanup worktree: {e}"));
@@ -1181,6 +1194,7 @@ impl App {
         if let Some(ref mut plan) = self.current_plan {
             plan.update_status(task_id, TaskStatus::Skipped);
         }
+        self.save_plan();
     }
 
     /// Mark a task as failed
@@ -1191,6 +1205,9 @@ impl App {
         );
         if let Some(ref mut plan) = self.current_plan {
             plan.mark_failed(task_id, error);
+            if let Err(e) = self.plan_manager.save(plan) {
+                debug::log(&format!("Failed to save plan: {e}"));
+            }
         }
     }
 
@@ -1201,6 +1218,15 @@ impl App {
             level,
             created_at: std::time::Instant::now(),
         });
+    }
+
+    /// Save current plan to file (persist status changes across restarts)
+    fn save_plan(&mut self) {
+        if let Some(ref plan) = self.current_plan {
+            if let Err(e) = self.plan_manager.save(plan) {
+                debug::log(&format!("Failed to save plan: {e}"));
+            }
+        }
     }
 
     /// Clean up old notifications (older than 5 seconds)
@@ -1236,6 +1262,10 @@ impl App {
                 );
                 if let Some(ref mut plan) = self.current_plan {
                     plan.mark_failed(&task_id, &error_msg);
+                    // Persist plan to file so status survives restart
+                    if let Err(e) = self.plan_manager.save(plan) {
+                        debug::log(&format!("Failed to save plan: {e}"));
+                    }
                 }
             } else {
                 // Agent ended successfully - get commits and mark completed
@@ -1265,6 +1295,10 @@ impl App {
 
                 if let Some(ref mut plan) = self.current_plan {
                     plan.mark_completed(&task_id, result);
+                    // Persist plan to file so status survives restart
+                    if let Err(e) = self.plan_manager.save(plan) {
+                        debug::log(&format!("Failed to save plan: {e}"));
+                    }
                 }
                 debug::log_task(&task_id, "running", "completed");
             }
