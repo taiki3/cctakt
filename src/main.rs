@@ -469,6 +469,9 @@ impl App {
 
     /// Process pending tasks in the current plan
     fn process_plan(&mut self) {
+        // First, recover orphaned running tasks (no corresponding agent)
+        self.recover_orphaned_tasks();
+
         // Get next pending task (clone to avoid borrow issues)
         let next_task = self
             .current_plan
@@ -483,6 +486,41 @@ impl App {
         // Save plan if we have changes
         if let Some(ref plan) = self.current_plan {
             let _ = self.plan_manager.save(plan);
+        }
+    }
+
+    /// Recover orphaned running tasks (tasks marked running but no agent exists)
+    fn recover_orphaned_tasks(&mut self) {
+        // Find running tasks without corresponding agents
+        let orphaned: Vec<String> = self
+            .current_plan
+            .as_ref()
+            .map(|plan| {
+                plan.tasks
+                    .iter()
+                    .filter(|t| t.status == TaskStatus::Running)
+                    .filter(|t| !self.task_agents.contains_key(&t.id))
+                    .map(|t| t.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Reset orphaned tasks to pending and collect notifications
+        let notifications: Vec<String> = orphaned
+            .iter()
+            .filter_map(|task_id| {
+                if let Some(ref mut plan) = self.current_plan {
+                    plan.update_status(task_id, TaskStatus::Pending);
+                    Some(format!("Recovered orphaned task: {}", task_id))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Add notifications after releasing plan borrow
+        for msg in notifications {
+            self.add_notification(msg, cctakt::plan::NotifyLevel::Warning);
         }
     }
 
@@ -1347,25 +1385,8 @@ fn run_tui() -> Result<()> {
                         }
                         AppMode::Normal => {
                             if app.agent_manager.is_empty() {
-                                // No agents - show menu
-                                match key.code {
-                                    KeyCode::Char('n') | KeyCode::Char('N') => {
-                                        let _ = app.add_agent();
-                                    }
-                                    KeyCode::Char('i') | KeyCode::Char('I') => {
-                                        app.open_issue_picker();
-                                    }
-                                    KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
-                                        app.should_quit = true;
-                                    }
-                                    _ => {
-                                        // Debug: show what key was pressed
-                                        app.add_notification(
-                                            format!("Key pressed: {:?}", key.code),
-                                            cctakt::plan::NotifyLevel::Info,
-                                        );
-                                    }
-                                }
+                                // No agents - orchestrator was closed, quit app
+                                app.should_quit = true;
                             } else {
                                 // Handle keybindings
                                 let handled = handle_keybinding(&mut app, key.modifiers, key.code);
@@ -1463,10 +1484,10 @@ fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> b
             app.should_quit = true;
             true
         }
-        // Ctrl+T: New agent
+        // Ctrl+T: Disabled - orchestrator is the only interactive agent
+        // Workers are spawned automatically via plan.json
         (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
-            let _ = app.add_agent();
-            true
+            false
         }
         // Ctrl+I or F2: Open issue picker
         (KeyModifiers::CONTROL, KeyCode::Char('i')) | (_, KeyCode::F(2)) => {
@@ -1728,6 +1749,10 @@ fn render_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 .bg(Theme::NEON_PINK)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(
+            concat!("v", env!("CARGO_PKG_VERSION"), " "),
+            Theme::style_text_muted(),
+        ),
     ];
 
     let agents = app.agent_manager.list();
@@ -1799,10 +1824,6 @@ fn render_ended_agent(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout
         Line::from(format!("  Agent '{}' session ended.", agent.name)),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  [Ctrl+T]", Theme::style_success()),
-            Span::raw(" New agent"),
-        ]),
-        Line::from(vec![
             Span::styled("  [Ctrl+W]", Theme::style_warning()),
             Span::raw(" Close this tab"),
         ]),
@@ -1811,8 +1832,8 @@ fn render_ended_agent(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout
             Span::raw(" Switch to another tab"),
         ]),
         Line::from(vec![
-            Span::styled("  [F2]", Style::default().fg(Color::Cyan)),
-            Span::raw(" New agent from GitHub issue"),
+            Span::styled("  [Ctrl+Q]", Theme::style_error()),
+            Span::raw(" Quit"),
         ]),
         Line::from(""),
     ])
@@ -2046,9 +2067,9 @@ fn format_json_event(json: &serde_json::Value) -> Line<'static> {
                 })
                 .unwrap_or_default();
 
-            // Truncate long text
-            let display_text = if text.len() > 100 {
-                format!("{}...", &text[..100])
+            // Truncate long text (char-safe for UTF-8)
+            let display_text: String = if text.chars().count() > 80 {
+                format!("{}...", text.chars().take(80).collect::<String>())
             } else {
                 text
             };
