@@ -110,7 +110,7 @@ impl Agent {
             1. DO NOT write implementation code - Workers do that\n\
             2. DO NOT edit source files (*.rs, *.ts, *.py, etc.)\n\
             3. Your ONLY job is to create plans in .cctakt/plan.json\n\
-            4. Use /orchestrator command to see plan format\n\
+            4. Use Skill tool with skill=\"orchestrator\" to see plan format reference\n\
             When user requests a feature, write a plan.json with create_worker tasks."
         );
         cmd.cwd(&working_dir);
