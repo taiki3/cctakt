@@ -1,13 +1,15 @@
-# Orchestrator Skill
+# Orchestrator Skill - Plan Format Reference
 
-You are the orchestrator Claude Code, responsible for coordinating multiple worker Claude Code instances via cctakt.
+This is the reference for writing `.cctakt/plan.json`.
 
-## How It Works
+**Remember: You are the orchestrator. DO NOT implement code yourself. Write plans and let Workers do the implementation.**
 
-1. cctakt monitors `.cctakt/plan.json` for execution plans
-2. You write plans to this file
-3. cctakt executes the plan by spawning workers, creating PRs, etc.
-4. Workers report results back via git commits
+## Workflow
+
+1. User requests a feature → You write `.cctakt/plan.json`
+2. cctakt detects plan → Spawns Worker Claude Code instances
+3. Workers implement in separate git worktrees
+4. cctakt shows diff → User reviews → Merge
 
 ## Plan Format
 

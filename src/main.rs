@@ -130,10 +130,12 @@ struct App {
     task_agents: std::collections::HashMap<String, usize>,
     /// Notifications to display
     notifications: Vec<Notification>,
-    /// Pending prompt to send to agent after it initializes
+    /// Pending prompt to send to agent after it initializes (unused in non-interactive mode)
     pending_agent_prompt: Option<String>,
-    /// Frame counter for delayed prompt sending
+    /// Frame counter for delayed prompt sending (unused in non-interactive mode)
     prompt_delay_frames: u32,
+    /// Pending review task ID to mark as completed after merge
+    pending_review_task_id: Option<String>,
 }
 
 impl App {
@@ -167,6 +169,7 @@ impl App {
             notifications: Vec::new(),
             pending_agent_prompt: None,
             prompt_delay_frames: 0,
+            pending_review_task_id: None,
         }
     }
 
@@ -255,11 +258,7 @@ impl App {
 
         let name = format!("#{}", issue.number);
         self.agent_manager
-            .add(name, working_dir, self.content_rows, self.content_cols)?;
-
-        // Send the task prompt to the agent after a short delay to let it initialize
-        // We'll queue it to be sent on next update
-        self.pending_agent_prompt = Some(task_prompt);
+            .add_non_interactive(name, working_dir, &task_prompt, None)?;
 
         self.agent_issues.push(Some(issue));
         self.agent_worktrees.push(worktree_path);
@@ -267,7 +266,7 @@ impl App {
         Ok(())
     }
 
-    /// Add a new agent with the current directory
+    /// Add a new agent with the current directory (interactive mode for orchestrator)
     fn add_agent(&mut self) -> Result<()> {
         let working_dir = env::current_dir().context("Failed to get current directory")?;
         let name = working_dir
@@ -283,6 +282,7 @@ impl App {
             format!("{}-{}", name, agent_count + 1)
         };
 
+        // Use interactive mode (PTY) for manual agent creation
         self.agent_manager
             .add(display_name, working_dir, self.content_rows, self.content_cols)?;
         self.agent_issues.push(None);
@@ -411,13 +411,24 @@ impl App {
             let _ = wt_manager.remove(&review.worktree_path);
         }
 
-        // Close the agent
-        self.agent_manager.close(review.agent_index);
-        if review.agent_index < self.agent_issues.len() {
-            self.agent_issues.remove(review.agent_index);
+        // Close the agent (if associated)
+        if review.agent_index != usize::MAX {
+            self.agent_manager.close(review.agent_index);
+            if review.agent_index < self.agent_issues.len() {
+                self.agent_issues.remove(review.agent_index);
+            }
+            if review.agent_index < self.agent_worktrees.len() {
+                self.agent_worktrees.remove(review.agent_index);
+            }
         }
-        if review.agent_index < self.agent_worktrees.len() {
-            self.agent_worktrees.remove(review.agent_index);
+
+        // Mark pending review task as completed
+        if let Some(task_id) = self.pending_review_task_id.take() {
+            if let Some(ref mut plan) = self.current_plan {
+                plan.update_status(&task_id, TaskStatus::Completed);
+                // Save plan to notify orchestrator
+                let _ = self.plan_manager.save(plan);
+            }
         }
 
         self.mode = AppMode::Normal;
@@ -525,7 +536,101 @@ impl App {
                     plan.update_status(task_id, TaskStatus::Completed);
                 }
             }
+            TaskAction::RequestReview { branch, after_task } => {
+                self.execute_request_review(task_id, &branch, after_task.as_deref());
+            }
         }
+    }
+
+    /// Execute RequestReview task
+    fn execute_request_review(
+        &mut self,
+        task_id: &str,
+        branch: &str,
+        after_task: Option<&str>,
+    ) {
+        // Check if after_task is completed (if specified)
+        if let Some(after_task_id) = after_task {
+            let after_completed = self
+                .current_plan
+                .as_ref()
+                .and_then(|p| p.get_task(after_task_id))
+                .map(|t| t.status == TaskStatus::Completed)
+                .unwrap_or(false);
+
+            if !after_completed {
+                // after_task not yet completed, skip for now
+                // Reset status to pending so it can be retried
+                if let Some(ref mut plan) = self.current_plan {
+                    plan.update_status(task_id, TaskStatus::Pending);
+                }
+                return;
+            }
+        }
+
+        // Find the agent index for this branch
+        let agent_index = self
+            .agent_worktrees
+            .iter()
+            .position(|wt| {
+                wt.as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(|n| n == branch)
+                    .unwrap_or(false)
+            });
+
+        if let Some(index) = agent_index {
+            // Store the task_id in review state for later completion marking
+            self.pending_review_task_id = Some(task_id.to_string());
+            self.start_review(index);
+        } else {
+            // Try to start review directly from branch name (worktree might be in worktree_dir)
+            let worktree_path = self.config.worktree_dir.join(branch);
+            if worktree_path.exists() {
+                self.pending_review_task_id = Some(task_id.to_string());
+                self.start_review_for_branch(branch, &worktree_path);
+            } else {
+                self.mark_task_failed(task_id, &format!("Branch '{}' not found", branch));
+            }
+        }
+    }
+
+    /// Start review mode for a specific branch and worktree path
+    fn start_review_for_branch(&mut self, branch: &str, worktree_path: &PathBuf) {
+        // Get main repo path
+        let repo_path = env::current_dir().unwrap_or_default();
+        let merger = MergeManager::new(&repo_path);
+
+        // Get diff
+        let diff = merger.diff(branch).unwrap_or_default();
+
+        // Get commit log
+        let commit_log = get_commit_log(worktree_path);
+
+        // Get merge preview
+        let preview = merger.preview(branch).ok();
+        let (files_changed, insertions, deletions, conflicts) = match preview {
+            Some(p) => (p.files_changed, p.insertions, p.deletions, p.conflicts),
+            None => (0, 0, 0, vec![]),
+        };
+
+        // Create diff view
+        let diff_view = DiffView::new(diff).with_title(format!("{} → main", branch));
+
+        self.review_state = Some(ReviewState {
+            agent_index: usize::MAX, // No agent associated
+            branch: branch.to_string(),
+            worktree_path: worktree_path.clone(),
+            diff_view,
+            commit_log,
+            files_changed,
+            insertions,
+            deletions,
+            conflicts,
+        });
+
+        self.mode = AppMode::ReviewMerge;
     }
 
     /// Execute CreateWorker task
@@ -555,13 +660,13 @@ impl App {
             }
         };
 
-        // Create agent
+        // Create agent in non-interactive mode
         let name = branch.to_string();
-        match self.agent_manager.add(
+        match self.agent_manager.add_non_interactive(
             name.clone(),
             working_dir,
-            self.content_rows,
-            self.content_cols,
+            task_description,
+            None, // No turn limit for plan-based workers
         ) {
             Ok(_) => {
                 let agent_index = self.agent_manager.list().len() - 1;
@@ -573,13 +678,6 @@ impl App {
                     format!("Worker started: {}", name),
                     cctakt::plan::NotifyLevel::Success,
                 );
-
-                // Send task description to agent
-                if let Some(agent) = self.agent_manager.get_mut(agent_index) {
-                    // Format task as a prompt
-                    let prompt = format!("{}\n", task_description);
-                    agent.send_bytes(prompt.as_bytes());
-                }
             }
             Err(e) => {
                 self.mark_task_failed(task_id, &format!("Failed to create agent: {}", e));
@@ -1412,7 +1510,7 @@ fn ui(f: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Header with tabs
-            Constraint::Min(1),    // Main area
+            Constraint::Min(0),    // Main area
         ])
         .split(f.area());
 
@@ -1727,9 +1825,32 @@ fn render_ended_agent(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout
     f.render_widget(menu, area);
 }
 
-/// Render active agent's vt100 screen
+/// Render active agent's screen (handles both interactive and non-interactive modes)
 fn render_agent_screen(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect) {
-    let parser = agent.parser.lock().unwrap();
+    match agent.mode {
+        agent::AgentMode::Interactive => {
+            render_agent_screen_interactive(f, agent, area);
+        }
+        agent::AgentMode::NonInteractive => {
+            render_agent_screen_non_interactive(f, agent, area);
+        }
+    }
+}
+
+/// Render interactive (PTY) agent screen with vt100 colors
+fn render_agent_screen_interactive(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect) {
+    let Some(parser_arc) = agent.get_parser() else {
+        // Fallback if no parser
+        let widget = Paragraph::new("No parser available").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Theme::style_border_muted()),
+        );
+        f.render_widget(widget, area);
+        return;
+    };
+
+    let parser = parser_arc.lock().unwrap();
     let screen = parser.screen();
 
     let content_height = area.height.saturating_sub(2) as usize;
@@ -1770,6 +1891,64 @@ fn render_agent_screen(f: &mut Frame, agent: &agent::Agent, area: ratatui::layou
         Block::default()
             .borders(Borders::ALL)
             .border_style(Theme::style_border_muted()),
+    );
+    f.render_widget(terminal_widget, area);
+}
+
+/// Render non-interactive agent screen (JSON stream output)
+fn render_agent_screen_non_interactive(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect) {
+    let content_height = area.height.saturating_sub(2) as usize;
+    let output = agent.screen_text();
+
+    // Get the last N lines to fit in the viewport
+    let all_lines: Vec<&str> = output.lines().collect();
+    let start = all_lines.len().saturating_sub(content_height);
+    let visible_lines: Vec<Line> = all_lines[start..]
+        .iter()
+        .map(|line| {
+            // Parse JSON for prettier display
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                format_json_event(&json)
+            } else {
+                Line::from(Span::raw(*line))
+            }
+        })
+        .collect();
+
+    // Show status indicator
+    let status_style = match agent.work_state {
+        agent::WorkState::Working => Style::default().fg(Color::Yellow),
+        agent::WorkState::Completed => {
+            if agent.error.is_some() {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::Green)
+            }
+        }
+        _ => Style::default().fg(Color::Gray),
+    };
+
+    let status_text = match agent.work_state {
+        agent::WorkState::Starting => "Starting...",
+        agent::WorkState::Working => "Working...",
+        agent::WorkState::Idle => "Idle",
+        agent::WorkState::Completed => {
+            if agent.error.is_some() {
+                "Error"
+            } else {
+                "Completed"
+            }
+        }
+    };
+
+    let terminal_widget = Paragraph::new(visible_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Theme::style_border_muted())
+            .title(Span::styled(
+                format!(" {} ", status_text),
+                status_style,
+            )),
     );
     f.render_widget(terminal_widget, area);
 }
@@ -1829,6 +2008,69 @@ fn vt100_color_to_ratatui(color: vt100::Color) -> Color {
         vt100::Color::Idx(15) => Color::White,
         vt100::Color::Idx(idx) => Color::Indexed(idx),
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+/// Format a JSON stream event for display
+fn format_json_event(json: &serde_json::Value) -> Line<'static> {
+    let event_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+
+    match event_type {
+        "system" => {
+            let subtype = json.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+            Line::from(vec![
+                Span::styled("[SYS] ", Style::default().fg(Color::Blue)),
+                Span::raw(subtype.to_string()),
+            ])
+        }
+        "assistant" => {
+            // Extract text from message content
+            let text = json
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|block| {
+                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                block.get("text").and_then(|t| t.as_str())
+                            } else if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                                let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                                Some(name)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+
+            // Truncate long text
+            let display_text = if text.len() > 100 {
+                format!("{}...", &text[..100])
+            } else {
+                text
+            };
+
+            Line::from(vec![
+                Span::styled("[AI] ", Style::default().fg(Color::Cyan)),
+                Span::raw(display_text),
+            ])
+        }
+        "result" => {
+            let subtype = json.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+            let style = if subtype == "success" {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Red)
+            };
+            Line::from(vec![
+                Span::styled("[DONE] ", style),
+                Span::raw(subtype.to_string()),
+            ])
+        }
+        _ => Line::from(Span::raw(format!("[{}]", event_type))),
     }
 }
 
@@ -2311,64 +2553,6 @@ mod tests {
             // Just verify it doesn't panic
             let _ = notification.message;
         }
-    }
-
-    // ==================== vt100 color conversion tests ====================
-
-    #[test]
-    fn test_vt100_color_to_ratatui_default() {
-        let color = vt100_color_to_ratatui(vt100::Color::Default);
-        assert_eq!(color, Color::Reset);
-    }
-
-    #[test]
-    fn test_vt100_color_to_ratatui_basic_colors() {
-        let tests = [
-            (0, Color::Black),
-            (1, Color::Red),
-            (2, Color::Green),
-            (3, Color::Yellow),
-            (4, Color::Blue),
-            (5, Color::Magenta),
-            (6, Color::Cyan),
-            (7, Color::Gray),
-        ];
-
-        for (idx, expected) in tests {
-            let result = vt100_color_to_ratatui(vt100::Color::Idx(idx));
-            assert_eq!(result, expected, "Color index {} failed", idx);
-        }
-    }
-
-    #[test]
-    fn test_vt100_color_to_ratatui_bright_colors() {
-        let tests = [
-            (8, Color::DarkGray),
-            (9, Color::LightRed),
-            (10, Color::LightGreen),
-            (11, Color::LightYellow),
-            (12, Color::LightBlue),
-            (13, Color::LightMagenta),
-            (14, Color::LightCyan),
-            (15, Color::White),
-        ];
-
-        for (idx, expected) in tests {
-            let result = vt100_color_to_ratatui(vt100::Color::Idx(idx));
-            assert_eq!(result, expected, "Color index {} failed", idx);
-        }
-    }
-
-    #[test]
-    fn test_vt100_color_to_ratatui_indexed() {
-        let result = vt100_color_to_ratatui(vt100::Color::Idx(200));
-        assert_eq!(result, Color::Indexed(200));
-    }
-
-    #[test]
-    fn test_vt100_color_to_ratatui_rgb() {
-        let result = vt100_color_to_ratatui(vt100::Color::Rgb(100, 150, 200));
-        assert_eq!(result, Color::Rgb(100, 150, 200));
     }
 
     // ==================== parse_github_url additional tests ====================

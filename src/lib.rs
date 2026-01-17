@@ -30,6 +30,7 @@
 // Core
 pub mod worktree;
 pub mod plan;
+pub mod stream_parser;
 
 // UI Components
 pub mod dialog;
@@ -62,3 +63,4 @@ pub use issue_picker::{IssuePicker, IssuePickerResult};
 pub use template::{TaskTemplate, render_task, suggest_branch_name, suggest_commit_message};
 pub use anthropic::AnthropicClient;
 pub use theme::{CyberpunkTheme, Theme};
+pub use stream_parser::{StreamEvent, StreamParser, parse_line as parse_stream_line};

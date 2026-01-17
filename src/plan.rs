@@ -142,6 +142,15 @@ pub enum TaskAction {
         #[serde(default)]
         level: NotifyLevel,
     },
+
+    /// Request review of a completed task
+    RequestReview {
+        /// Branch to review
+        branch: String,
+        /// Task ID that must complete before this review (optional)
+        #[serde(default)]
+        after_task: Option<String>,
+    },
 }
 
 /// Notification level
@@ -328,6 +337,21 @@ impl Task {
             TaskAction::Notify {
                 message: message.into(),
                 level: NotifyLevel::Info,
+            },
+        )
+    }
+
+    /// Create a review request task
+    pub fn request_review(
+        id: impl Into<String>,
+        branch: impl Into<String>,
+        after_task: Option<String>,
+    ) -> Self {
+        Self::new(
+            id,
+            TaskAction::RequestReview {
+                branch: branch.into(),
+                after_task,
             },
         )
     }
@@ -932,6 +956,61 @@ mod tests {
             };
             let json = serde_json::to_string(&action).unwrap();
             assert!(json.contains(expected), "Expected {} in {}", expected, json);
+        }
+    }
+
+    #[test]
+    fn test_task_action_request_review_serialize() {
+        let action = TaskAction::RequestReview {
+            branch: "feat/test".to_string(),
+            after_task: Some("w-1".to_string()),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"request_review\""));
+        assert!(json.contains("\"branch\":\"feat/test\""));
+        assert!(json.contains("\"after_task\":\"w-1\""));
+    }
+
+    #[test]
+    fn test_task_action_request_review_no_after_task() {
+        let action = TaskAction::RequestReview {
+            branch: "feat/test".to_string(),
+            after_task: None,
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"request_review\""));
+        assert!(!json.contains("\"after_task\"") || json.contains("\"after_task\":null"));
+    }
+
+    #[test]
+    fn test_task_action_request_review_deserialize() {
+        let json = r#"{
+            "type": "request_review",
+            "branch": "feat/auth",
+            "after_task": "worker-1"
+        }"#;
+
+        let action: TaskAction = serde_json::from_str(json).unwrap();
+        match action {
+            TaskAction::RequestReview { branch, after_task } => {
+                assert_eq!(branch, "feat/auth");
+                assert_eq!(after_task, Some("worker-1".to_string()));
+            }
+            _ => panic!("Wrong action type"),
+        }
+    }
+
+    #[test]
+    fn test_task_request_review_helper() {
+        let task = Task::request_review("r-1", "feat/test", Some("w-1".to_string()));
+        assert_eq!(task.id, "r-1");
+        assert_eq!(task.status, TaskStatus::Pending);
+        match task.action {
+            TaskAction::RequestReview { branch, after_task } => {
+                assert_eq!(branch, "feat/test");
+                assert_eq!(after_task, Some("w-1".to_string()));
+            }
+            _ => panic!("Wrong action type"),
         }
     }
 
