@@ -99,6 +99,7 @@ impl Agent {
 
         // Spawn Claude Code in the specified working directory (orchestrator mode)
         let mut cmd = CommandBuilder::new("claude");
+        cmd.arg("-c"); // Continue from last conversation
         cmd.arg("--dangerously-skip-permissions");
         cmd.arg("--append-system-prompt");
         cmd.arg(
