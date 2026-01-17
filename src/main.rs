@@ -3,9 +3,9 @@ mod agent;
 use agent::{AgentManager, AgentStatus};
 use anyhow::{Context, Result};
 use cctakt::{
-    issue_picker::centered_rect, render_task, suggest_branch_name, Config, DiffView, GitHubClient,
-    Issue, IssuePicker, IssuePickerResult, MergeManager, Plan, PlanManager, TaskAction, TaskResult,
-    TaskStatus, Theme, WorktreeManager,
+    issue_picker::centered_rect, render_task, suggest_branch_name, create_theme, set_theme, theme,
+    Config, DiffView, GitHubClient, Issue, IssuePicker, IssuePickerResult, MergeManager, Plan,
+    PlanManager, TaskAction, TaskResult, TaskStatus, WorktreeManager,
 };
 use clap::{Parser, Subcommand};
 use crossterm::{
@@ -231,7 +231,7 @@ impl App {
                 Err(e) => {
                     self.issue_picker.set_error(Some(e.to_string()));
                     self.add_notification(
-                        format!("Failed to fetch issues: {}", e),
+                        format!("Failed to fetch issues: {e}"),
                         cctakt::plan::NotifyLevel::Error,
                     );
                 }
@@ -333,7 +333,7 @@ impl App {
         // Second pass: handle completion (separate borrow)
         if let Some((index, name)) = completed_agent {
             self.add_notification(
-                format!("Agent '{}' completed work. Starting review...", name),
+                format!("Agent '{name}' completed work. Starting review..."),
                 cctakt::plan::NotifyLevel::Success,
             );
 
@@ -382,7 +382,7 @@ impl App {
         };
 
         // Create diff view
-        let diff_view = DiffView::new(diff).with_title(format!("{} → main", branch));
+        let diff_view = DiffView::new(diff).with_title(format!("{branch} → main"));
 
         self.review_state = Some(ReviewState {
             agent_index,
@@ -454,7 +454,7 @@ impl App {
                 Ok(Some(plan)) => {
                     if let Some(desc) = &plan.description {
                         self.add_notification(
-                            format!("Plan loaded: {}", desc),
+                            format!("Plan loaded: {desc}"),
                             cctakt::plan::NotifyLevel::Info,
                         );
                     }
@@ -465,7 +465,7 @@ impl App {
                 }
                 Err(e) => {
                     self.add_notification(
-                        format!("Failed to load plan: {}", e),
+                        format!("Failed to load plan: {e}"),
                         cctakt::plan::NotifyLevel::Error,
                     );
                 }
@@ -517,7 +517,7 @@ impl App {
             .filter_map(|task_id| {
                 if let Some(ref mut plan) = self.current_plan {
                     plan.update_status(task_id, TaskStatus::Pending);
-                    Some(format!("Recovered orphaned task: {}", task_id))
+                    Some(format!("Recovered orphaned task: {task_id}"))
                 } else {
                     None
                 }
@@ -635,7 +635,7 @@ impl App {
                 self.pending_review_task_id = Some(task_id.to_string());
                 self.start_review_for_branch(branch, &worktree_path);
             } else {
-                self.mark_task_failed(task_id, &format!("Branch '{}' not found", branch));
+                self.mark_task_failed(task_id, &format!("Branch '{branch}' not found"));
             }
         }
     }
@@ -660,7 +660,7 @@ impl App {
         };
 
         // Create diff view
-        let diff_view = DiffView::new(diff).with_title(format!("{} → main", branch));
+        let diff_view = DiffView::new(diff).with_title(format!("{branch} → main"));
 
         self.review_state = Some(ReviewState {
             agent_index: usize::MAX, // No agent associated
@@ -690,7 +690,7 @@ impl App {
             match wt_manager.create(branch, &self.config.worktree_dir) {
                 Ok(path) => (path.clone(), Some(path)),
                 Err(e) => {
-                    self.mark_task_failed(task_id, &format!("Failed to create worktree: {}", e));
+                    self.mark_task_failed(task_id, &format!("Failed to create worktree: {e}"));
                     return;
                 }
             }
@@ -698,7 +698,7 @@ impl App {
             match env::current_dir() {
                 Ok(dir) => (dir, None),
                 Err(e) => {
-                    self.mark_task_failed(task_id, &format!("Failed to get current directory: {}", e));
+                    self.mark_task_failed(task_id, &format!("Failed to get current directory: {e}"));
                     return;
                 }
             }
@@ -719,12 +719,12 @@ impl App {
                 self.task_agents.insert(task_id.to_string(), agent_index);
 
                 self.add_notification(
-                    format!("Worker started: {}", name),
+                    format!("Worker started: {name}"),
                     cctakt::plan::NotifyLevel::Success,
                 );
             }
             Err(e) => {
-                self.mark_task_failed(task_id, &format!("Failed to create agent: {}", e));
+                self.mark_task_failed(task_id, &format!("Failed to create agent: {e}"));
             }
         }
     }
@@ -768,7 +768,7 @@ impl App {
                 }
             }
             Err(e) => {
-                self.mark_task_failed(task_id, &format!("Failed to create PR: {}", e));
+                self.mark_task_failed(task_id, &format!("Failed to create PR: {e}"));
             }
         }
     }
@@ -778,7 +778,7 @@ impl App {
         let repo_path = match env::current_dir() {
             Ok(p) => p,
             Err(e) => {
-                self.mark_task_failed(task_id, &format!("Failed to get current directory: {}", e));
+                self.mark_task_failed(task_id, &format!("Failed to get current directory: {e}"));
                 return;
             }
         };
@@ -801,7 +801,7 @@ impl App {
                 }
             }
             Err(e) => {
-                self.mark_task_failed(task_id, &format!("Failed to merge: {}", e));
+                self.mark_task_failed(task_id, &format!("Failed to merge: {e}"));
             }
         }
     }
@@ -813,7 +813,7 @@ impl App {
             match wt_manager.remove(&worktree_path) {
                 Ok(()) => {
                     self.add_notification(
-                        format!("Worktree cleaned up: {}", worktree),
+                        format!("Worktree cleaned up: {worktree}"),
                         cctakt::plan::NotifyLevel::Info,
                     );
                     if let Some(ref mut plan) = self.current_plan {
@@ -821,7 +821,7 @@ impl App {
                     }
                 }
                 Err(e) => {
-                    self.mark_task_failed(task_id, &format!("Failed to cleanup worktree: {}", e));
+                    self.mark_task_failed(task_id, &format!("Failed to cleanup worktree: {e}"));
                 }
             }
         } else {
@@ -832,7 +832,7 @@ impl App {
     /// Execute RunCommand task (not implemented yet - just marks complete)
     fn execute_run_command(&mut self, task_id: &str, worktree: &str, command: &str) {
         self.add_notification(
-            format!("RunCommand not implemented: {} in {}", command, worktree),
+            format!("RunCommand not implemented: {command} in {worktree}"),
             cctakt::plan::NotifyLevel::Warning,
         );
         if let Some(ref mut plan) = self.current_plan {
@@ -843,7 +843,7 @@ impl App {
     /// Mark a task as failed
     fn mark_task_failed(&mut self, task_id: &str, error: &str) {
         self.add_notification(
-            format!("Task failed: {}", error),
+            format!("Task failed: {error}"),
             cctakt::plan::NotifyLevel::Error,
         );
         if let Some(ref mut plan) = self.current_plan {
@@ -887,7 +887,7 @@ impl App {
             if let Some(error_msg) = error {
                 // Agent ended with error - mark task as failed
                 self.add_notification(
-                    format!("Worker failed: {}", error_msg),
+                    format!("Worker failed: {error_msg}"),
                     cctakt::plan::NotifyLevel::Error,
                 );
                 if let Some(ref mut plan) = self.current_plan {
@@ -908,7 +908,7 @@ impl App {
                 // Warn if no commits
                 if commits.is_empty() {
                     self.add_notification(
-                        format!("Worker {} completed with no commits", task_id),
+                        format!("Worker {task_id} completed with no commits"),
                         cctakt::plan::NotifyLevel::Warning,
                     );
                 }
@@ -960,7 +960,7 @@ fn get_worker_commits(worktree_path: &PathBuf) -> Vec<String> {
     for base in bases {
         let output = Command::new("git")
             .current_dir(worktree_path)
-            .args(["log", "--oneline", &format!("{}..HEAD", base)])
+            .args(["log", "--oneline", &format!("{base}..HEAD")])
             .output();
 
         if let Ok(o) = output {
@@ -1132,7 +1132,7 @@ fn run_init(force: bool) -> Result<()> {
         }
         writeln!(file, "\n# cctakt")?;
         for entry in &added_entries {
-            writeln!(file, "{}", entry)?;
+            writeln!(file, "{entry}")?;
         }
         println!("✅ Updated .gitignore with cctakt entries");
     }
@@ -1224,7 +1224,7 @@ fn run_status() -> Result<()> {
 
         // Get repo info
         if let Some(repo) = detect_github_repo() {
-            println!("   Repository: {}", repo);
+            println!("   Repository: {repo}");
         }
     } else {
         println!("❌ No");
@@ -1283,6 +1283,9 @@ fn run_status() -> Result<()> {
 fn run_tui() -> Result<()> {
     // Load configuration
     let config = Config::load().unwrap_or_default();
+
+    // Initialize theme from config
+    set_theme(create_theme(&config.theme));
 
     // Get terminal size
     let (cols, rows) = terminal::size().context("Failed to get terminal size")?;
@@ -1612,6 +1615,7 @@ fn render_notifications(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         height,
     };
 
+    let t = theme();
     let lines: Vec<Line> = app
         .notifications
         .iter()
@@ -1619,13 +1623,13 @@ fn render_notifications(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .take(3)
         .map(|n| {
             let (prefix, style) = match n.level {
-                cctakt::plan::NotifyLevel::Info => ("ℹ", Theme::style_info()),
-                cctakt::plan::NotifyLevel::Warning => ("⚠", Theme::style_warning()),
-                cctakt::plan::NotifyLevel::Error => ("✗", Theme::style_error()),
-                cctakt::plan::NotifyLevel::Success => ("✓", Theme::style_success()),
+                cctakt::plan::NotifyLevel::Info => ("ℹ", t.style_info()),
+                cctakt::plan::NotifyLevel::Warning => ("⚠", t.style_warning()),
+                cctakt::plan::NotifyLevel::Error => ("✗", t.style_error()),
+                cctakt::plan::NotifyLevel::Success => ("✓", t.style_success()),
             };
             Line::from(vec![
-                Span::styled(format!(" {} ", prefix), style),
+                Span::styled(format!(" {prefix} "), style),
                 Span::raw(&n.message),
             ])
         })
@@ -1634,7 +1638,7 @@ fn render_notifications(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let notification_widget = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Theme::style_border_muted()),
+            .border_style(t.style_border_muted()),
     );
 
     f.render_widget(Clear, notification_area);
@@ -1651,8 +1655,7 @@ fn render_plan_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let total = plan.tasks.len();
 
     let status_text = format!(
-        " Plan: {}/{} ({} running, {} failed) ",
-        completed, total, running, failed
+        " Plan: {completed}/{total} ({running} running, {failed} failed) "
     );
 
     let status_area = ratatui::layout::Rect {
@@ -1662,14 +1665,15 @@ fn render_plan_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         height: 1,
     };
 
+    let t = theme();
     let style = if failed > 0 {
-        Theme::style_error()
+        t.style_error()
     } else if running > 0 {
-        Theme::style_warning()
+        t.style_warning()
     } else if pending > 0 {
-        Theme::style_info()
+        t.style_info()
     } else {
-        Theme::style_success()
+        t.style_success()
     };
 
     let status_widget = Paragraph::new(status_text).style(style);
@@ -1681,6 +1685,8 @@ fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect
     let Some(ref mut state) = app.review_state else {
         return;
     };
+
+    let t = theme();
 
     // Clear the area first
     f.render_widget(Clear, area);
@@ -1698,29 +1704,29 @@ fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect
     // Header with merge info
     let mut header_lines = vec![
         Line::from(vec![
-            Span::styled(" Review Merge: ", Style::default().fg(Theme::NEON_CYAN).add_modifier(Modifier::BOLD)),
-            Span::styled(&state.branch, Style::default().fg(Theme::NEON_YELLOW)),
+            Span::styled(" Review Merge: ", Style::default().fg(t.neon_cyan()).add_modifier(Modifier::BOLD)),
+            Span::styled(&state.branch, Style::default().fg(t.neon_yellow())),
             Span::raw(" → "),
-            Span::styled("main", Style::default().fg(Theme::SUCCESS)),
+            Span::styled("main", Style::default().fg(t.success())),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::raw(" Stats: "),
-            Span::styled(format!("{} files", state.files_changed), Theme::style_text()),
+            Span::styled(format!("{} files", state.files_changed), t.style_text()),
             Span::raw(", "),
-            Span::styled(format!("+{}", state.insertions), Style::default().fg(Theme::SUCCESS)),
+            Span::styled(format!("+{}", state.insertions), Style::default().fg(t.success())),
             Span::raw(" / "),
-            Span::styled(format!("-{}", state.deletions), Style::default().fg(Theme::ERROR)),
+            Span::styled(format!("-{}", state.deletions), Style::default().fg(t.error())),
         ]),
     ];
 
     // Show conflicts warning if any
     if !state.conflicts.is_empty() {
         header_lines.push(Line::from(vec![
-            Span::styled(" ⚠ Potential conflicts: ", Theme::style_warning()),
+            Span::styled(" ⚠ Potential conflicts: ", t.style_warning()),
             Span::styled(
                 state.conflicts.join(", "),
-                Theme::style_warning(),
+                t.style_warning(),
             ),
         ]));
     }
@@ -1729,10 +1735,10 @@ fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect
     if !state.commit_log.is_empty() {
         header_lines.push(Line::from(""));
         header_lines.push(Line::from(vec![
-            Span::styled(" Recent commits: ", Style::default().fg(Theme::NEON_CYAN)),
+            Span::styled(" Recent commits: ", Style::default().fg(t.neon_cyan())),
             Span::styled(
                 state.commit_log.lines().next().unwrap_or(""),
-                Theme::style_text_secondary(),
+                t.style_text_secondary(),
             ),
         ]));
     }
@@ -1740,7 +1746,7 @@ fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect
     let header = Paragraph::new(header_lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Theme::style_border()),
+            .border_style(t.style_border()),
     );
     f.render_widget(header, chunks[0]);
 
@@ -1749,34 +1755,35 @@ fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect
 
     // Footer with help
     let footer = Paragraph::new(vec![Line::from(vec![
-        Span::styled(" [Enter/M]", Theme::style_success()),
+        Span::styled(" [Enter/M]", t.style_success()),
         Span::raw(" Merge  "),
-        Span::styled("[Esc/C]", Theme::style_error()),
+        Span::styled("[Esc/C]", t.style_error()),
         Span::raw(" Cancel  "),
-        Span::styled("[↑/↓/PgUp/PgDn]", Theme::style_key()),
+        Span::styled("[↑/↓/PgUp/PgDn]", t.style_key()),
         Span::raw(" Scroll"),
     ])])
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Theme::style_border_muted()),
+            .border_style(t.style_border_muted()),
     );
     f.render_widget(footer, chunks[2]);
 }
 
 /// Render header with tabs
 fn render_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let t = theme();
     let mut spans: Vec<Span> = vec![
         Span::styled(
             " cctakt ",
             Style::default()
-                .fg(Theme::TAB_ACTIVE_FG)
-                .bg(Theme::NEON_PINK)
+                .fg(t.tab_active_fg())
+                .bg(t.neon_pink())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             concat!("v", env!("CARGO_PKG_VERSION"), " "),
-            Theme::style_text_muted(),
+            t.style_text_muted(),
         ),
     ];
 
@@ -1790,11 +1797,11 @@ fn render_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let tab_content = format!(" [{}:{}] ", i + 1, agent.name);
 
         let style = if is_active {
-            Theme::style_tab_active()
+            t.style_tab_active()
         } else if is_ended {
-            Style::default().fg(Theme::STATUS_ENDED)
+            Style::default().fg(t.status_ended())
         } else {
-            Theme::style_tab_inactive()
+            t.style_tab_inactive()
         };
 
         spans.push(Span::styled(tab_content, style));
@@ -1803,7 +1810,7 @@ fn render_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     // Add help text on the right
     spans.push(Span::styled(
         " [^T:new ^I:issue ^W:close ^N/^P:switch ^Q:quit]",
-        Theme::style_text_muted(),
+        t.style_text_muted(),
     ));
 
     let header = Paragraph::new(Line::from(spans));
@@ -1812,52 +1819,54 @@ fn render_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
 /// Render menu when no agents exist
 fn render_no_agent_menu(f: &mut Frame, area: ratatui::layout::Rect) {
+    let t = theme();
     let menu = Paragraph::new(vec![
         Line::from(""),
         Line::from("  No active agents."),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  [N]", Theme::style_success()),
+            Span::styled("  [N]", t.style_success()),
             Span::raw(" New agent"),
         ]),
         Line::from(vec![
-            Span::styled("  [I/F2]", Theme::style_info()),
+            Span::styled("  [I/F2]", t.style_info()),
             Span::raw(" New agent from GitHub issue"),
         ]),
         Line::from(vec![
-            Span::styled("  [Q]", Theme::style_error()),
+            Span::styled("  [Q]", t.style_error()),
             Span::raw(" Quit cctakt"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             "  Press N, I, or Q...",
-            Theme::style_text_muted(),
+            t.style_text_muted(),
         )),
     ])
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Theme::style_border_muted()),
+            .border_style(t.style_border_muted()),
     );
     f.render_widget(menu, area);
 }
 
 /// Render ended agent menu
 fn render_ended_agent(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect) {
+    let t = theme();
     let menu = Paragraph::new(vec![
         Line::from(""),
         Line::from(format!("  Agent '{}' session ended.", agent.name)),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  [Ctrl+W]", Theme::style_warning()),
+            Span::styled("  [Ctrl+W]", t.style_warning()),
             Span::raw(" Close this tab"),
         ]),
         Line::from(vec![
-            Span::styled("  [Ctrl+N/P]", Style::default().fg(Theme::NEON_BLUE)),
+            Span::styled("  [Ctrl+N/P]", Style::default().fg(t.neon_blue())),
             Span::raw(" Switch to another tab"),
         ]),
         Line::from(vec![
-            Span::styled("  [Ctrl+Q]", Theme::style_error()),
+            Span::styled("  [Ctrl+Q]", t.style_error()),
             Span::raw(" Quit"),
         ]),
         Line::from(""),
@@ -1866,7 +1875,7 @@ fn render_ended_agent(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout
         Block::default()
             .borders(Borders::ALL)
             .title(format!(" {} (ended) ", agent.name))
-            .border_style(Theme::style_border_muted()),
+            .border_style(t.style_border_muted()),
     );
     f.render_widget(menu, area);
 }
@@ -1885,12 +1894,13 @@ fn render_agent_screen(f: &mut Frame, agent: &agent::Agent, area: ratatui::layou
 
 /// Render interactive (PTY) agent screen with vt100 colors
 fn render_agent_screen_interactive(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect) {
+    let t = theme();
     let Some(parser_arc) = agent.get_parser() else {
         // Fallback if no parser
         let widget = Paragraph::new("No parser available").block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Theme::style_border_muted()),
+                .border_style(t.style_border_muted()),
         );
         f.render_widget(widget, area);
         return;
@@ -1936,13 +1946,14 @@ fn render_agent_screen_interactive(f: &mut Frame, agent: &agent::Agent, area: ra
     let terminal_widget = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Theme::style_border_muted()),
+            .border_style(t.style_border_muted()),
     );
     f.render_widget(terminal_widget, area);
 }
 
 /// Render non-interactive agent screen (JSON stream output)
 fn render_agent_screen_non_interactive(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout::Rect) {
+    let t = theme();
     let content_height = area.height.saturating_sub(2) as usize;
     let output = agent.screen_text();
 
@@ -1990,9 +2001,9 @@ fn render_agent_screen_non_interactive(f: &mut Frame, agent: &agent::Agent, area
     let terminal_widget = Paragraph::new(visible_lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Theme::style_border_muted())
+            .border_style(t.style_border_muted())
             .title(Span::styled(
-                format!(" {} ", status_text),
+                format!(" {status_text} "),
                 status_style,
             )),
     );
@@ -2116,7 +2127,7 @@ fn format_json_event(json: &serde_json::Value) -> Line<'static> {
                 Span::raw(subtype.to_string()),
             ])
         }
-        _ => Line::from(Span::raw(format!("[{}]", event_type))),
+        _ => Line::from(Span::raw(format!("[{event_type}]"))),
     }
 }
 
@@ -2170,7 +2181,7 @@ fn run_plan(plan_path: PathBuf) -> Result<()> {
 
         println!("========================================");
         println!("[{}] Starting worker", task.id);
-        println!("Branch: {}", branch);
+        println!("Branch: {branch}");
         println!("Task: {}", task_description.lines().next().unwrap_or(""));
         println!("========================================");
 
@@ -2181,9 +2192,9 @@ fn run_plan(plan_path: PathBuf) -> Result<()> {
                 path
             }
             Err(e) => {
-                println!("Failed to create worktree: {}", e);
+                println!("Failed to create worktree: {e}");
                 task.status = TaskStatus::Failed;
-                task.error = Some(format!("Failed to create worktree: {}", e));
+                task.error = Some(format!("Failed to create worktree: {e}"));
                 continue;
             }
         };
@@ -2212,40 +2223,38 @@ fn run_plan(plan_path: PathBuf) -> Result<()> {
         // Read stdout
         if let Some(stdout) = child.stdout.take() {
             let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    // Parse and display JSON events
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-                        let event_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                        match event_type {
-                            "system" => {
-                                let subtype = json.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
-                                println!("[SYS] {}", subtype);
-                            }
-                            "assistant" => {
-                                // Extract tool uses
-                                if let Some(content) = json.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
-                                    for block in content {
-                                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                                            let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-                                            println!("[TOOL] {}", name);
-                                        } else if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                            if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                                let preview: String = text.chars().take(100).collect();
-                                                if !preview.trim().is_empty() {
-                                                    println!("[AI] {}...", preview.replace('\n', " "));
-                                                }
+            for line in reader.lines().map_while(Result::ok) {
+                // Parse and display JSON events
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                    let event_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    match event_type {
+                        "system" => {
+                            let subtype = json.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+                            println!("[SYS] {subtype}");
+                        }
+                        "assistant" => {
+                            // Extract tool uses
+                            if let Some(content) = json.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+                                for block in content {
+                                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                                        let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                                        println!("[TOOL] {name}");
+                                    } else if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                            let preview: String = text.chars().take(100).collect();
+                                            if !preview.trim().is_empty() {
+                                                println!("[AI] {}...", preview.replace('\n', " "));
                                             }
                                         }
                                     }
                                 }
                             }
-                            "result" => {
-                                let subtype = json.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
-                                println!("[RESULT] {}", subtype);
-                            }
-                            _ => {}
                         }
+                        "result" => {
+                            let subtype = json.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+                            println!("[RESULT] {subtype}");
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -2253,13 +2262,13 @@ fn run_plan(plan_path: PathBuf) -> Result<()> {
 
         // Wait for process to finish
         let status = child.wait()?;
-        println!("\n--- Worker finished (exit: {}) ---\n", status);
+        println!("\n--- Worker finished (exit: {status}) ---\n");
 
         // Get commits
         let commits = get_worker_commits(&worktree_path);
         println!("Commits: {}", commits.len());
         for commit in &commits {
-            println!("  - {}", commit);
+            println!("  - {commit}");
         }
 
         // Update task
@@ -2272,7 +2281,7 @@ fn run_plan(plan_path: PathBuf) -> Result<()> {
             });
         } else {
             task.status = TaskStatus::Failed;
-            task.error = Some(format!("Process exited with: {}", status));
+            task.error = Some(format!("Process exited with: {status}"));
         }
 
         println!();
@@ -2302,7 +2311,7 @@ fn run_issues(labels: Option<String>, state: String) -> Result<()> {
         .map(|l| l.split(',').map(|s| s.trim()).collect())
         .unwrap_or_default();
 
-    println!("Fetching issues from {}...\n", repo);
+    println!("Fetching issues from {repo}...\n");
 
     let issues = client.fetch_issues(&label_vec, &state)?;
 
@@ -2668,7 +2677,7 @@ mod tests {
     #[test]
     fn test_diff_view_scrolling() {
         let diff = (0..100)
-            .map(|i| format!("+line {}\n", i))
+            .map(|i| format!("+line {i}\n"))
             .collect::<String>();
         let mut view = DiffView::new(diff);
 
@@ -2718,7 +2727,7 @@ mod tests {
         if !commits.is_empty() {
             // Each commit should have at least a hash (7+ chars)
             let first = &commits[0];
-            assert!(first.len() >= 7, "Commit should have hash: {}", first);
+            assert!(first.len() >= 7, "Commit should have hash: {first}");
         }
     }
 
