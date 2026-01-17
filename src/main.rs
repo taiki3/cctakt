@@ -1574,11 +1574,15 @@ fn ui(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(1), // Header with tabs
             Constraint::Min(0),    // Main area
+            Constraint::Length(1), // Footer with status
         ])
         .split(f.area());
 
     // Header with tabs
     render_header(f, app, chunks[0]);
+
+    // Footer with status
+    render_footer(f, app, chunks[2]);
 
     // Main area
     if app.agent_manager.is_empty() {
@@ -1821,14 +1825,111 @@ fn render_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         spans.push(Span::styled(tab_content, style));
     }
 
-    // Add help text on the right
-    spans.push(Span::styled(
-        " [^T:new ^I:issue ^W:close ^N/^P:switch ^Q:quit]",
+    let header = Paragraph::new(Line::from(spans));
+    f.render_widget(header, area);
+}
+
+/// Render footer with agent status and key bindings
+fn render_footer(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let t = theme();
+
+    // Count agents by work state
+    let agents = app.agent_manager.list();
+    let mut running_count = 0;
+    let mut idle_count = 0;
+    let mut completed_count = 0;
+
+    for agent in agents {
+        match agent.work_state {
+            agent::WorkState::Starting | agent::WorkState::Working => running_count += 1,
+            agent::WorkState::Idle => idle_count += 1,
+            agent::WorkState::Completed => completed_count += 1,
+        }
+    }
+
+    let total_agents = agents.len();
+
+    // Build left side: agent status
+    let mut left_spans: Vec<Span> = vec![];
+
+    if total_agents > 0 {
+        left_spans.push(Span::styled(
+            format!(" Agents: {total_agents} "),
+            t.style_text_muted(),
+        ));
+        left_spans.push(Span::styled(
+            format!("Running: {running_count}"),
+            if running_count > 0 {
+                t.style_warning()
+            } else {
+                t.style_text_muted()
+            },
+        ));
+        left_spans.push(Span::styled(" | ", t.style_text_muted()));
+        left_spans.push(Span::styled(
+            format!("Idle: {idle_count}"),
+            if idle_count > 0 {
+                t.style_info()
+            } else {
+                t.style_text_muted()
+            },
+        ));
+        left_spans.push(Span::styled(" | ", t.style_text_muted()));
+        left_spans.push(Span::styled(
+            format!("Completed: {completed_count}"),
+            if completed_count > 0 {
+                t.style_success()
+            } else {
+                t.style_text_muted()
+            },
+        ));
+    }
+
+    // Build right side: plan status (if any) and key bindings
+    let mut right_spans: Vec<Span> = vec![];
+
+    // Plan status
+    if let Some(ref plan) = app.current_plan {
+        let (pending, running, completed, failed) = plan.count_by_status();
+        let total = plan.tasks.len();
+        let plan_style = if failed > 0 {
+            t.style_error()
+        } else if running > 0 {
+            t.style_warning()
+        } else {
+            t.style_success()
+        };
+        right_spans.push(Span::styled(
+            format!("Plan: {completed}/{total} "),
+            plan_style,
+        ));
+        // Mark pending as unused to suppress warning
+        let _ = pending;
+    }
+
+    // Key bindings
+    right_spans.push(Span::styled(
+        "[^T:new ^I:issue ^W:close ^N/^P:switch ^Q:quit] ",
         t.style_text_muted(),
     ));
 
-    let header = Paragraph::new(Line::from(spans));
-    f.render_widget(header, area);
+    // Calculate widths for left/right alignment
+    let left_text: String = left_spans.iter().map(|s| s.content.as_ref()).collect();
+    let right_text: String = right_spans.iter().map(|s| s.content.as_ref()).collect();
+    let left_width = left_text.len();
+    let right_width = right_text.len();
+    let available_width = area.width as usize;
+
+    // Build final line with padding
+    let mut spans = left_spans;
+    let padding = available_width.saturating_sub(left_width + right_width);
+    if padding > 0 {
+        spans.push(Span::raw(" ".repeat(padding)));
+    }
+    spans.extend(right_spans);
+
+    let footer = Paragraph::new(Line::from(spans)).style(Style::default().bg(t.bg_surface()));
+    f.render_widget(footer, area);
 }
 
 /// Render menu when no agents exist
