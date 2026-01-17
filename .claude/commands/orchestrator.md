@@ -35,10 +35,12 @@ Spawn a new worker Claude Code in a git worktree:
 {
   "type": "create_worker",
   "branch": "feat/feature-name",
-  "task_description": "Implement the feature...",
+  "task_description": "Implement the feature...\n\n完了後は必ずgit add && git commitしてください。",
   "base_branch": "main"  // optional
 }
 ```
+
+**IMPORTANT:** Always include commit instructions in task_description. Workers may forget to commit otherwise.
 
 ### create_pr
 Create a pull request:
@@ -130,6 +132,7 @@ This information is added to the task's `result` field.
 ## Best Practices
 
 1. **Clear task descriptions** - Workers need enough context to work independently
-2. **Logical task ordering** - Dependencies should be reflected in task order
-3. **Reasonable scope** - Each worker should have a focused, achievable task
-4. **Branch naming** - Use descriptive branch names (feat/, fix/, etc.)
+2. **Always include commit instructions** - End task_description with "完了後は必ずgit add && git commitしてください。"
+3. **Logical task ordering** - Dependencies should be reflected in task order
+4. **Reasonable scope** - Each worker should have a focused, achievable task
+5. **Branch naming** - Use descriptive branch names (feat/, fix/, etc.)
