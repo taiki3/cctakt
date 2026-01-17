@@ -357,12 +357,15 @@ impl App {
             return;
         };
 
-        // Get branch name from worktree path
-        let branch = worktree_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+        // Get actual branch name from git (not directory name which has / replaced with -)
+        let branch = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["branch", "--show-current"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
 
         // Get main repo path
         let repo_path = env::current_dir().unwrap_or_default();
