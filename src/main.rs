@@ -1848,11 +1848,22 @@ fn run_tui() -> Result<()> {
                                             if key.code == KeyCode::Esc {
                                                 app.input_mode = InputMode::Navigation;
                                             } else {
-                                                // Forward to focused pane's agent PTY
-                                                let agent = match app.focused_pane {
-                                                    FocusedPane::Left => app.agent_manager.get_interactive_mut(),
-                                                    FocusedPane::Right => app.agent_manager.get_active_non_interactive_mut(),
+                                                // Determine which agent to send input to
+                                                // Fallback: if focused pane has no agent, try the other pane
+                                                let has_interactive = app.agent_manager.get_interactive().is_some();
+                                                let has_worker = app.agent_manager.get_active_non_interactive().is_some();
+
+                                                let use_interactive = match app.focused_pane {
+                                                    FocusedPane::Left => has_interactive || !has_worker,
+                                                    FocusedPane::Right => !has_worker && has_interactive,
                                                 };
+
+                                                let agent = if use_interactive {
+                                                    app.agent_manager.get_interactive_mut()
+                                                } else {
+                                                    app.agent_manager.get_active_non_interactive_mut()
+                                                };
+
                                                 if let Some(agent) = agent {
                                                     if agent.status == AgentStatus::Running {
                                                         match (key.modifiers, key.code) {
