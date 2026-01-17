@@ -1480,33 +1480,33 @@ fn run_tui() -> Result<()> {
 fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> bool {
     match (modifiers, code) {
         // Ctrl+Q: Quit
-        (KeyModifiers::CONTROL, KeyCode::Char('q')) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('q' | 'Q')) => {
             app.should_quit = true;
             true
         }
         // Ctrl+T: Disabled - orchestrator is the only interactive agent
         // Workers are spawned automatically via plan.json
-        (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('t' | 'T')) => {
             false
         }
         // Ctrl+I or F2: Open issue picker
-        (KeyModifiers::CONTROL, KeyCode::Char('i')) | (_, KeyCode::F(2)) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('i' | 'I')) | (_, KeyCode::F(2)) => {
             app.open_issue_picker();
             true
         }
         // Ctrl+W: Close active agent
-        (KeyModifiers::CONTROL, KeyCode::Char('w')) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('w' | 'W')) => {
             app.close_active_agent();
             true
         }
         // Ctrl+Tab or plain Tab (when no agent focused): Next tab
         // Note: Ctrl+Tab may not work in all terminals, so we use Ctrl+N as alternative
-        (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('n' | 'N')) => {
             app.agent_manager.next();
             true
         }
         // Ctrl+P: Previous tab
-        (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('p' | 'P')) => {
             app.agent_manager.prev();
             true
         }
