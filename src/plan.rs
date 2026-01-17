@@ -1056,7 +1056,7 @@ mod tests {
             ..Default::default()
         });
 
-        let (pending, running, completed, failed) = plan.count_by_status();
+        let (pending, _running, completed, _failed) = plan.count_by_status();
         assert_eq!(pending, 2);
         assert_eq!(completed, 1);
 
