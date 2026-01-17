@@ -1744,6 +1744,8 @@ fn run_tui() -> Result<()> {
         if event::poll(Duration::from_millis(16))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Debug: log every key event received
+                    debug::log(&format!("KEY_EVENT: {:?}, mode={:?}, input_mode={:?}", key.code, app.mode, app.input_mode));
                     match app.mode {
                         AppMode::ReviewMerge => {
                             // Handle review mode input
@@ -1807,12 +1809,15 @@ fn run_tui() -> Result<()> {
                             }
                         }
                         AppMode::Normal => {
+                            debug::log("Entering AppMode::Normal branch");
                             if app.agent_manager.is_empty() {
                                 // No agents - orchestrator was closed, quit app
+                                debug::log("agent_manager.is_empty() = true, quitting");
                                 app.should_quit = true;
                             } else {
                                 // Always handle global keybindings (Ctrl+Q, Ctrl+T, etc)
                                 let handled = handle_keybinding(&mut app, key.modifiers, key.code);
+                                debug::log(&format!("handle_keybinding returned: {}", handled));
 
                                 if !handled {
                                     // Debug: log current mode and key
