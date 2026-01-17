@@ -32,6 +32,7 @@ pub mod worktree;
 pub mod plan;
 pub mod stream_parser;
 pub mod debug;
+pub mod lock;
 
 // UI Components
 pub mod dialog;
@@ -70,3 +71,4 @@ pub use theme::{
 #[allow(deprecated)]
 pub use theme::Theme;
 pub use stream_parser::{StreamEvent, StreamParser, parse_line as parse_stream_line};
+pub use lock::LockFile;
