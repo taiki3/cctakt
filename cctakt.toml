@@ -1,0 +1,18 @@
+worktree_dir = ".worktrees"
+branch_prefix = "cctakt"
+
+[github]
+auto_fetch_issues = false
+labels = []
+
+[anthropic]
+model = "claude-sonnet-4-20250514"
+max_tokens = 1024
+auto_generate_pr_description = true
+
+[keybindings]
+new_agent = "ctrl+t"
+close_agent = "ctrl+w"
+next_tab = "tab"
+prev_tab = "shift+tab"
+quit = "ctrl+q"

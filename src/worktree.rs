@@ -274,10 +274,10 @@ mod tests {
             .output()
             .unwrap();
 
-        // 初期コミット
+        // 初期コミット（署名をスキップ）
         Command::new("git")
             .current_dir(temp.path())
-            .args(["commit", "--allow-empty", "-m", "init"])
+            .args(["commit", "--allow-empty", "-m", "init", "--no-gpg-sign"])
             .output()
             .unwrap();
 

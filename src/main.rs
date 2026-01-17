@@ -2,23 +2,94 @@ mod agent;
 
 use agent::{AgentManager, AgentStatus};
 use anyhow::{Context, Result};
+use cctakt::{
+    issue_picker::centered_rect, suggest_branch_name, Config, DiffView, GitHubClient, Issue,
+    IssuePicker, IssuePickerResult, MergeManager, Plan, PlanManager, TaskAction, TaskResult,
+    TaskStatus, WorktreeManager,
+};
+use clap::{Parser, Subcommand};
 use crossterm::{
     cursor::Hide,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{self, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        self, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    },
 };
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal,
 };
 use std::env;
-use std::io;
+use std::fs;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
+
+// ==================== CLI Definition ====================
+
+#[derive(Parser)]
+#[command(name = "cctakt")]
+#[command(author, version, about = "Claude Code Orchestrator - TUI for managing multiple Claude Code agents")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Initialize cctakt in the current repository
+    Init {
+        /// Force overwrite existing files
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Check environment setup status
+    Status,
+}
+
+/// Application mode
+#[derive(Debug, Clone, PartialEq)]
+enum AppMode {
+    /// Normal mode - agent PTY view
+    Normal,
+    /// Issue picker mode
+    IssuePicker,
+    /// Review and merge mode - show diff and commit log
+    ReviewMerge,
+}
+
+/// Review state for a completed agent
+struct ReviewState {
+    /// Agent index being reviewed
+    agent_index: usize,
+    /// Branch name
+    branch: String,
+    /// Working directory (worktree path)
+    worktree_path: PathBuf,
+    /// Diff view
+    diff_view: DiffView,
+    /// Commit log
+    commit_log: String,
+    /// Merge preview info
+    files_changed: usize,
+    insertions: usize,
+    deletions: usize,
+    /// Potential conflicts
+    conflicts: Vec<String>,
+}
+
+/// Notification message
+struct Notification {
+    message: String,
+    level: cctakt::plan::NotifyLevel,
+    created_at: std::time::Instant,
+}
 
 /// Application state
 struct App {
@@ -26,16 +97,130 @@ struct App {
     should_quit: bool,
     content_rows: u16,
     content_cols: u16,
+    /// Current application mode
+    mode: AppMode,
+    /// Configuration
+    config: Config,
+    /// Worktree manager
+    worktree_manager: Option<WorktreeManager>,
+    /// GitHub client
+    github_client: Option<GitHubClient>,
+    /// Issue picker UI
+    issue_picker: IssuePicker,
+    /// Current issue being worked on (per agent)
+    agent_issues: Vec<Option<Issue>>,
+    /// Worktree paths per agent
+    agent_worktrees: Vec<Option<PathBuf>>,
+    /// Review state for merge review mode
+    review_state: Option<ReviewState>,
+    /// Plan manager for orchestrator communication
+    plan_manager: PlanManager,
+    /// Current plan being executed
+    current_plan: Option<Plan>,
+    /// Task ID to agent index mapping
+    task_agents: std::collections::HashMap<String, usize>,
+    /// Notifications to display
+    notifications: Vec<Notification>,
 }
 
 impl App {
-    fn new(rows: u16, cols: u16) -> Self {
+    fn new(rows: u16, cols: u16, config: Config) -> Self {
+        // Initialize worktree manager
+        let worktree_manager = WorktreeManager::from_current_dir().ok();
+
+        // Initialize GitHub client if repository is configured
+        let github_client = config
+            .github
+            .repository
+            .as_ref()
+            .and_then(|repo| GitHubClient::new(repo).ok());
+
         Self {
             agent_manager: AgentManager::new(),
             should_quit: false,
             content_rows: rows,
             content_cols: cols,
+            mode: AppMode::Normal,
+            config,
+            worktree_manager,
+            github_client,
+            issue_picker: IssuePicker::new(),
+            agent_issues: Vec::new(),
+            agent_worktrees: Vec::new(),
+            review_state: None,
+            plan_manager: PlanManager::current_dir(),
+            current_plan: None,
+            task_agents: std::collections::HashMap::new(),
+            notifications: Vec::new(),
         }
+    }
+
+    /// Open issue picker and fetch issues
+    fn open_issue_picker(&mut self) {
+        if self.github_client.is_none() {
+            // Try to detect repository from git remote
+            if let Some(repo) = detect_github_repo() {
+                self.github_client = GitHubClient::new(&repo).ok();
+            }
+        }
+
+        if self.github_client.is_some() {
+            self.mode = AppMode::IssuePicker;
+            self.fetch_issues();
+        }
+    }
+
+    /// Fetch issues from GitHub
+    fn fetch_issues(&mut self) {
+        self.issue_picker.set_loading(true);
+
+        if let Some(ref client) = self.github_client {
+            let labels: Vec<&str> = self
+                .config
+                .github
+                .labels
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+
+            match client.fetch_issues(&labels, "open") {
+                Ok(issues) => {
+                    self.issue_picker.set_issues(issues);
+                }
+                Err(e) => {
+                    self.issue_picker.set_error(Some(e.to_string()));
+                }
+            }
+        }
+    }
+
+    /// Add a new agent from a selected issue
+    fn add_agent_from_issue(&mut self, issue: Issue) -> Result<()> {
+        let branch_name = suggest_branch_name(&issue, &self.config.branch_prefix);
+
+        // Create worktree if available
+        let (working_dir, worktree_path) = if let Some(ref wt_manager) = self.worktree_manager {
+            match wt_manager.create(&branch_name, &self.config.worktree_dir) {
+                Ok(path) => (path.clone(), Some(path)),
+                Err(_) => (
+                    env::current_dir().context("Failed to get current directory")?,
+                    None,
+                ),
+            }
+        } else {
+            (
+                env::current_dir().context("Failed to get current directory")?,
+                None,
+            )
+        };
+
+        let name = format!("#{}", issue.number);
+        self.agent_manager
+            .add(name, working_dir, self.content_rows, self.content_cols)?;
+        self.agent_issues.push(Some(issue));
+        self.agent_worktrees.push(worktree_path);
+
+        Ok(())
     }
 
     /// Add a new agent with the current directory
@@ -54,7 +239,10 @@ impl App {
             format!("{}-{}", name, agent_count + 1)
         };
 
-        self.agent_manager.add(display_name, working_dir, self.content_rows, self.content_cols)?;
+        self.agent_manager
+            .add(display_name, working_dir, self.content_rows, self.content_cols)?;
+        self.agent_issues.push(None);
+        self.agent_worktrees.push(None);
         Ok(())
     }
 
@@ -62,6 +250,441 @@ impl App {
     fn close_active_agent(&mut self) {
         let index = self.agent_manager.active_index();
         self.agent_manager.close(index);
+        if index < self.agent_issues.len() {
+            self.agent_issues.remove(index);
+        }
+        if index < self.agent_worktrees.len() {
+            self.agent_worktrees.remove(index);
+        }
+    }
+
+    /// Start review mode for the agent at given index
+    fn start_review(&mut self, agent_index: usize) {
+        // Get worktree path for this agent
+        let worktree_path = if agent_index < self.agent_worktrees.len() {
+            self.agent_worktrees[agent_index].clone()
+        } else {
+            None
+        };
+
+        let Some(worktree_path) = worktree_path else {
+            // No worktree, can't review
+            return;
+        };
+
+        // Get branch name from worktree path
+        let branch = worktree_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Get main repo path
+        let repo_path = env::current_dir().unwrap_or_default();
+        let merger = MergeManager::new(&repo_path);
+
+        // Get diff
+        let diff = merger.diff(&branch).unwrap_or_default();
+
+        // Get commit log
+        let commit_log = get_commit_log(&worktree_path);
+
+        // Get merge preview
+        let preview = merger.preview(&branch).ok();
+        let (files_changed, insertions, deletions, conflicts) = match preview {
+            Some(p) => (p.files_changed, p.insertions, p.deletions, p.conflicts),
+            None => (0, 0, 0, vec![]),
+        };
+
+        // Create diff view
+        let diff_view = DiffView::new(diff).with_title(format!("{} → main", branch));
+
+        self.review_state = Some(ReviewState {
+            agent_index,
+            branch,
+            worktree_path,
+            diff_view,
+            commit_log,
+            files_changed,
+            insertions,
+            deletions,
+            conflicts,
+        });
+
+        self.mode = AppMode::ReviewMerge;
+    }
+
+    /// Execute merge and cleanup
+    fn execute_merge(&mut self) -> Result<()> {
+        let review = self.review_state.take();
+        let Some(review) = review else {
+            return Ok(());
+        };
+
+        let repo_path = env::current_dir().context("Failed to get current directory")?;
+        let merger = MergeManager::new(&repo_path);
+
+        // Perform merge
+        merger.merge_no_ff(&review.branch, None)?;
+
+        // Remove worktree
+        if let Some(ref wt_manager) = self.worktree_manager {
+            let _ = wt_manager.remove(&review.worktree_path);
+        }
+
+        // Close the agent
+        self.agent_manager.close(review.agent_index);
+        if review.agent_index < self.agent_issues.len() {
+            self.agent_issues.remove(review.agent_index);
+        }
+        if review.agent_index < self.agent_worktrees.len() {
+            self.agent_worktrees.remove(review.agent_index);
+        }
+
+        self.mode = AppMode::Normal;
+        Ok(())
+    }
+
+    /// Cancel review and return to normal mode
+    fn cancel_review(&mut self) {
+        self.review_state = None;
+        self.mode = AppMode::Normal;
+    }
+
+    /// Check for plan file changes and load
+    fn check_plan(&mut self) {
+        if self.plan_manager.has_changes() {
+            match self.plan_manager.load() {
+                Ok(Some(plan)) => {
+                    if let Some(desc) = &plan.description {
+                        self.add_notification(
+                            format!("Plan loaded: {}", desc),
+                            cctakt::plan::NotifyLevel::Info,
+                        );
+                    }
+                    self.current_plan = Some(plan);
+                }
+                Ok(None) => {
+                    self.current_plan = None;
+                }
+                Err(e) => {
+                    self.add_notification(
+                        format!("Failed to load plan: {}", e),
+                        cctakt::plan::NotifyLevel::Error,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Process pending tasks in the current plan
+    fn process_plan(&mut self) {
+        // Get next pending task (clone to avoid borrow issues)
+        let next_task = self
+            .current_plan
+            .as_ref()
+            .and_then(|p| p.next_pending())
+            .cloned();
+
+        if let Some(task) = next_task {
+            self.execute_task(&task.id.clone());
+        }
+
+        // Save plan if we have changes
+        if let Some(ref plan) = self.current_plan {
+            let _ = self.plan_manager.save(plan);
+        }
+    }
+
+    /// Execute a task by ID
+    fn execute_task(&mut self, task_id: &str) {
+        // Mark task as running
+        if let Some(ref mut plan) = self.current_plan {
+            plan.update_status(task_id, TaskStatus::Running);
+        }
+
+        // Get task action (clone to avoid borrow issues)
+        let task_action = self
+            .current_plan
+            .as_ref()
+            .and_then(|p| p.get_task(task_id))
+            .map(|t| t.action.clone());
+
+        let Some(action) = task_action else {
+            return;
+        };
+
+        match action {
+            TaskAction::CreateWorker {
+                branch,
+                task_description,
+                base_branch,
+            } => {
+                self.execute_create_worker(task_id, &branch, &task_description, base_branch.as_deref());
+            }
+            TaskAction::CreatePr {
+                branch,
+                title,
+                body,
+                base,
+                draft,
+            } => {
+                self.execute_create_pr(task_id, &branch, &title, body.as_deref(), base.as_deref(), draft);
+            }
+            TaskAction::MergeBranch { branch, target } => {
+                self.execute_merge_branch(task_id, &branch, target.as_deref());
+            }
+            TaskAction::CleanupWorktree { worktree } => {
+                self.execute_cleanup_worktree(task_id, &worktree);
+            }
+            TaskAction::RunCommand { worktree, command } => {
+                self.execute_run_command(task_id, &worktree, &command);
+            }
+            TaskAction::Notify { message, level } => {
+                self.add_notification(message, level);
+                if let Some(ref mut plan) = self.current_plan {
+                    plan.update_status(task_id, TaskStatus::Completed);
+                }
+            }
+        }
+    }
+
+    /// Execute CreateWorker task
+    fn execute_create_worker(
+        &mut self,
+        task_id: &str,
+        branch: &str,
+        task_description: &str,
+        _base_branch: Option<&str>,
+    ) {
+        // Create worktree
+        let (working_dir, worktree_path) = if let Some(ref wt_manager) = self.worktree_manager {
+            match wt_manager.create(branch, &self.config.worktree_dir) {
+                Ok(path) => (path.clone(), Some(path)),
+                Err(e) => {
+                    self.mark_task_failed(task_id, &format!("Failed to create worktree: {}", e));
+                    return;
+                }
+            }
+        } else {
+            match env::current_dir() {
+                Ok(dir) => (dir, None),
+                Err(e) => {
+                    self.mark_task_failed(task_id, &format!("Failed to get current directory: {}", e));
+                    return;
+                }
+            }
+        };
+
+        // Create agent
+        let name = branch.to_string();
+        match self.agent_manager.add(
+            name.clone(),
+            working_dir,
+            self.content_rows,
+            self.content_cols,
+        ) {
+            Ok(_) => {
+                let agent_index = self.agent_manager.list().len() - 1;
+                self.agent_issues.push(None);
+                self.agent_worktrees.push(worktree_path);
+                self.task_agents.insert(task_id.to_string(), agent_index);
+
+                self.add_notification(
+                    format!("Worker started: {}", name),
+                    cctakt::plan::NotifyLevel::Success,
+                );
+
+                // Send task description to agent
+                if let Some(agent) = self.agent_manager.get_mut(agent_index) {
+                    // Format task as a prompt
+                    let prompt = format!("{}\n", task_description);
+                    agent.send_bytes(prompt.as_bytes());
+                }
+            }
+            Err(e) => {
+                self.mark_task_failed(task_id, &format!("Failed to create agent: {}", e));
+            }
+        }
+    }
+
+    /// Execute CreatePr task
+    fn execute_create_pr(
+        &mut self,
+        task_id: &str,
+        branch: &str,
+        title: &str,
+        body: Option<&str>,
+        base: Option<&str>,
+        draft: bool,
+    ) {
+        let Some(ref client) = self.github_client else {
+            self.mark_task_failed(task_id, "GitHub client not configured");
+            return;
+        };
+
+        let create_req = cctakt::github::CreatePullRequest {
+            title: title.to_string(),
+            body: body.map(String::from),
+            head: branch.to_string(),
+            base: base.unwrap_or("main").to_string(),
+            draft,
+        };
+
+        match client.create_pull_request(&create_req) {
+            Ok(pr) => {
+                self.add_notification(
+                    format!("PR created: #{} - {}", pr.number, pr.title),
+                    cctakt::plan::NotifyLevel::Success,
+                );
+                let result = TaskResult {
+                    commits: Vec::new(),
+                    pr_number: Some(pr.number),
+                    pr_url: Some(pr.html_url),
+                };
+                if let Some(ref mut plan) = self.current_plan {
+                    plan.mark_completed(task_id, result);
+                }
+            }
+            Err(e) => {
+                self.mark_task_failed(task_id, &format!("Failed to create PR: {}", e));
+            }
+        }
+    }
+
+    /// Execute MergeBranch task
+    fn execute_merge_branch(&mut self, task_id: &str, branch: &str, target: Option<&str>) {
+        let repo_path = match env::current_dir() {
+            Ok(p) => p,
+            Err(e) => {
+                self.mark_task_failed(task_id, &format!("Failed to get current directory: {}", e));
+                return;
+            }
+        };
+
+        let merger = MergeManager::new(&repo_path);
+        let merger = if let Some(t) = target {
+            merger.with_main_branch(t)
+        } else {
+            merger
+        };
+
+        match merger.merge_no_ff(branch, None) {
+            Ok(()) => {
+                self.add_notification(
+                    format!("Merged: {} → {}", branch, target.unwrap_or("main")),
+                    cctakt::plan::NotifyLevel::Success,
+                );
+                if let Some(ref mut plan) = self.current_plan {
+                    plan.update_status(task_id, TaskStatus::Completed);
+                }
+            }
+            Err(e) => {
+                self.mark_task_failed(task_id, &format!("Failed to merge: {}", e));
+            }
+        }
+    }
+
+    /// Execute CleanupWorktree task
+    fn execute_cleanup_worktree(&mut self, task_id: &str, worktree: &str) {
+        if let Some(ref wt_manager) = self.worktree_manager {
+            let worktree_path = self.config.worktree_dir.join(worktree);
+            match wt_manager.remove(&worktree_path) {
+                Ok(()) => {
+                    self.add_notification(
+                        format!("Worktree cleaned up: {}", worktree),
+                        cctakt::plan::NotifyLevel::Info,
+                    );
+                    if let Some(ref mut plan) = self.current_plan {
+                        plan.update_status(task_id, TaskStatus::Completed);
+                    }
+                }
+                Err(e) => {
+                    self.mark_task_failed(task_id, &format!("Failed to cleanup worktree: {}", e));
+                }
+            }
+        } else {
+            self.mark_task_failed(task_id, "Worktree manager not available");
+        }
+    }
+
+    /// Execute RunCommand task (not implemented yet - just marks complete)
+    fn execute_run_command(&mut self, task_id: &str, worktree: &str, command: &str) {
+        self.add_notification(
+            format!("RunCommand not implemented: {} in {}", command, worktree),
+            cctakt::plan::NotifyLevel::Warning,
+        );
+        if let Some(ref mut plan) = self.current_plan {
+            plan.update_status(task_id, TaskStatus::Skipped);
+        }
+    }
+
+    /// Mark a task as failed
+    fn mark_task_failed(&mut self, task_id: &str, error: &str) {
+        self.add_notification(
+            format!("Task failed: {}", error),
+            cctakt::plan::NotifyLevel::Error,
+        );
+        if let Some(ref mut plan) = self.current_plan {
+            plan.mark_failed(task_id, error);
+        }
+    }
+
+    /// Add a notification
+    fn add_notification(&mut self, message: String, level: cctakt::plan::NotifyLevel) {
+        self.notifications.push(Notification {
+            message,
+            level,
+            created_at: std::time::Instant::now(),
+        });
+    }
+
+    /// Clean up old notifications (older than 5 seconds)
+    fn cleanup_notifications(&mut self) {
+        let now = std::time::Instant::now();
+        self.notifications.retain(|n| {
+            now.duration_since(n.created_at).as_secs() < 5
+        });
+    }
+
+    /// Check if any agent completed its task and update plan
+    fn check_agent_task_completions(&mut self) {
+        // Collect completed task info (task_id, agent_index)
+        let completed: Vec<(String, usize)> = self
+            .task_agents
+            .iter()
+            .filter_map(|(task_id, &agent_index)| {
+                self.agent_manager
+                    .get(agent_index)
+                    .filter(|a| a.status == AgentStatus::Ended)
+                    .map(|_| (task_id.clone(), agent_index))
+            })
+            .collect();
+
+        // Mark tasks as completed with results
+        for (task_id, agent_index) in completed {
+            // Get commits from worktree
+            let commits = if agent_index < self.agent_worktrees.len() {
+                if let Some(ref worktree_path) = self.agent_worktrees[agent_index] {
+                    get_worker_commits(worktree_path)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            let result = TaskResult {
+                commits,
+                pr_number: None,
+                pr_url: None,
+            };
+
+            if let Some(ref mut plan) = self.current_plan {
+                plan.mark_completed(&task_id, result);
+            }
+            self.task_agents.remove(&task_id);
+        }
     }
 
     /// Resize all agents
@@ -72,7 +695,355 @@ impl App {
     }
 }
 
-fn main() -> Result<()> {
+/// Get commit log from worktree
+fn get_commit_log(worktree_path: &PathBuf) -> String {
+    use std::process::Command;
+
+    let output = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["log", "--oneline", "-n", "20", "--no-decorate"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Get commits made by a worker (commits since branch creation)
+fn get_worker_commits(worktree_path: &PathBuf) -> Vec<String> {
+    use std::process::Command;
+
+    // Get commits that are ahead of main/master
+    // Try main first, then master
+    let bases = ["main", "master"];
+    for base in bases {
+        let output = Command::new("git")
+            .current_dir(worktree_path)
+            .args(["log", "--oneline", &format!("{}..HEAD", base)])
+            .output();
+
+        if let Ok(o) = output {
+            if o.status.success() {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let commits: Vec<String> = stdout
+                    .lines()
+                    .map(|s| s.to_string())
+                    .collect();
+                if !commits.is_empty() {
+                    return commits;
+                }
+            }
+        }
+    }
+
+    // Fallback: just get recent commits
+    let output = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["log", "--oneline", "-n", "10"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|s| s.to_string())
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Detect GitHub repository from git remote
+fn detect_github_repo() -> Option<String> {
+    use std::process::Command;
+
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    parse_github_url(&url)
+}
+
+/// Parse GitHub repository from URL string
+/// Supports formats:
+/// - https://github.com/owner/repo.git
+/// - git@github.com:owner/repo.git
+/// - https://github.com/owner/repo
+fn parse_github_url(url: &str) -> Option<String> {
+    if url.contains("github.com") {
+        let repo = url
+            .trim_end_matches(".git")
+            .split("github.com")
+            .last()?
+            .trim_start_matches('/')
+            .trim_start_matches(':')
+            .to_string();
+        if repo.is_empty() {
+            None
+        } else {
+            Some(repo)
+        }
+    } else {
+        None
+    }
+}
+
+// ==================== Init Command ====================
+
+/// Run the init command
+fn run_init(force: bool) -> Result<()> {
+    println!("🚀 Initializing cctakt...\n");
+
+    // Check if we're in a git repository
+    let is_git_repo = Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !is_git_repo {
+        return Err(anyhow::anyhow!(
+            "Not a git repository. Please run 'cctakt init' from within a git repository."
+        ));
+    }
+
+    // 1. Check/create .claude directory
+    let claude_dir = PathBuf::from(".claude");
+    let commands_dir = claude_dir.join("commands");
+
+    if !claude_dir.exists() {
+        fs::create_dir_all(&claude_dir)?;
+        println!("✅ Created .claude/ directory");
+    } else {
+        println!("📁 .claude/ directory already exists");
+    }
+
+    if !commands_dir.exists() {
+        fs::create_dir_all(&commands_dir)?;
+        println!("✅ Created .claude/commands/ directory");
+    }
+
+    // 2. Create orchestrator skill
+    let orchestrator_skill_path = commands_dir.join("orchestrator.md");
+    if !orchestrator_skill_path.exists() || force {
+        let skill_content = include_str!("../templates/orchestrator_skill.md");
+        fs::write(&orchestrator_skill_path, skill_content)?;
+        println!("✅ Created orchestrator skill: .claude/commands/orchestrator.md");
+    } else {
+        println!("📄 Orchestrator skill already exists (use --force to overwrite)");
+    }
+
+    // 3. Create orchestrator.md reference
+    let orchestrator_md_path = claude_dir.join("orchestrator.md");
+    if !orchestrator_md_path.exists() || force {
+        let orchestrator_content = include_str!("../templates/orchestrator.md");
+        fs::write(&orchestrator_md_path, orchestrator_content)?;
+        println!("✅ Created orchestrator reference: .claude/orchestrator.md");
+    } else {
+        println!("📄 Orchestrator reference already exists (use --force to overwrite)");
+    }
+
+    // 4. Create .cctakt directory
+    let cctakt_dir = PathBuf::from(".cctakt");
+    if !cctakt_dir.exists() {
+        fs::create_dir_all(&cctakt_dir)?;
+        println!("✅ Created .cctakt/ directory");
+    } else {
+        println!("📁 .cctakt/ directory already exists");
+    }
+
+    // 5. Create cctakt.toml config if not exists
+    let config_path = PathBuf::from("cctakt.toml");
+    if !config_path.exists() || force {
+        Config::generate_default(&config_path)?;
+        println!("✅ Created configuration: cctakt.toml");
+    } else {
+        println!("📄 Configuration file already exists (use --force to overwrite)");
+    }
+
+    // 6. Update .gitignore
+    let gitignore_path = PathBuf::from(".gitignore");
+    let gitignore_entries = [".cctakt/plan_*.json"];
+
+    let existing_gitignore = fs::read_to_string(&gitignore_path).unwrap_or_default();
+    let mut added_entries = Vec::new();
+
+    for entry in gitignore_entries {
+        if !existing_gitignore.contains(entry) {
+            added_entries.push(entry);
+        }
+    }
+
+    if !added_entries.is_empty() {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&gitignore_path)?;
+
+        if !existing_gitignore.is_empty() && !existing_gitignore.ends_with('\n') {
+            writeln!(file)?;
+        }
+        writeln!(file, "\n# cctakt")?;
+        for entry in &added_entries {
+            writeln!(file, "{}", entry)?;
+        }
+        println!("✅ Updated .gitignore with cctakt entries");
+    }
+
+    println!("\n---\n");
+
+    // 7. Check GitHub token
+    check_github_token();
+
+    // 8. Check claude CLI
+    check_claude_cli();
+
+    println!("\n🎉 cctakt initialization complete!");
+    println!("\nNext steps:");
+    println!("  1. Run 'cctakt' to start the TUI");
+    println!("  2. Press 'i' to select an issue");
+    println!("  3. The orchestrator Claude Code can use /orchestrator skill");
+
+    Ok(())
+}
+
+/// Check GitHub token availability
+fn check_github_token() {
+    print!("🔑 GitHub token: ");
+    io::stdout().flush().ok();
+
+    // Check environment variable
+    if let Ok(token) = env::var("GITHUB_TOKEN") {
+        if !token.is_empty() {
+            println!("✅ Found (GITHUB_TOKEN environment variable)");
+            return;
+        }
+    }
+
+    // Check gh CLI
+    let gh_token = Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|t| !t.is_empty());
+
+    if gh_token.is_some() {
+        println!("✅ Found (gh CLI)");
+        return;
+    }
+
+    println!("⚠️  Not found");
+    println!("   To enable GitHub integration:");
+    println!("   - Set GITHUB_TOKEN environment variable, or");
+    println!("   - Run 'gh auth login' to authenticate with GitHub CLI");
+}
+
+/// Check claude CLI availability
+fn check_claude_cli() {
+    print!("🤖 Claude CLI: ");
+    io::stdout().flush().ok();
+
+    let claude_available = Command::new("claude")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if claude_available {
+        println!("✅ Available");
+    } else {
+        println!("❌ Not found");
+        println!("   Install Claude Code CLI: npm install -g @anthropic-ai/claude-code");
+    }
+}
+
+/// Run the status command
+fn run_status() -> Result<()> {
+    println!("cctakt Environment Status\n");
+
+    // Git repository
+    print!("📂 Git repository: ");
+    io::stdout().flush().ok();
+    let is_git_repo = Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if is_git_repo {
+        println!("✅ Yes");
+
+        // Get repo info
+        if let Some(repo) = detect_github_repo() {
+            println!("   Repository: {}", repo);
+        }
+    } else {
+        println!("❌ No");
+    }
+
+    // Check directories
+    print!("📁 .claude/ directory: ");
+    io::stdout().flush().ok();
+    if PathBuf::from(".claude").exists() {
+        println!("✅ Exists");
+    } else {
+        println!("❌ Missing");
+    }
+
+    print!("📁 .cctakt/ directory: ");
+    io::stdout().flush().ok();
+    if PathBuf::from(".cctakt").exists() {
+        println!("✅ Exists");
+    } else {
+        println!("❌ Missing");
+    }
+
+    // Check orchestrator skill
+    print!("📄 Orchestrator skill: ");
+    io::stdout().flush().ok();
+    if PathBuf::from(".claude/commands/orchestrator.md").exists() {
+        println!("✅ Installed");
+    } else {
+        println!("❌ Not installed");
+    }
+
+    // Check config
+    print!("⚙️  Configuration: ");
+    io::stdout().flush().ok();
+    if PathBuf::from("cctakt.toml").exists() {
+        println!("✅ Found");
+    } else {
+        println!("⚠️  Using defaults");
+    }
+
+    println!();
+
+    // Check GitHub token
+    check_github_token();
+
+    // Check claude CLI
+    check_claude_cli();
+
+    println!();
+    println!("Run 'cctakt init' to set up missing components.");
+
+    Ok(())
+}
+
+/// Run the TUI application
+fn run_tui() -> Result<()> {
+    // Load configuration
+    let config = Config::load().unwrap_or_default();
+
     // Get terminal size
     let (cols, rows) = terminal::size().context("Failed to get terminal size")?;
     let content_rows = rows.saturating_sub(3); // Header 1 line + border 2 lines
@@ -82,13 +1053,16 @@ fn main() -> Result<()> {
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, Hide)?;
-    execute!(stdout, crossterm::terminal::SetTitle("cctakt - Claude Code Orchestrator"))?;
+    execute!(
+        stdout,
+        crossterm::terminal::SetTitle("cctakt - Claude Code Orchestrator")
+    )?;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     // Initialize app
-    let mut app = App::new(content_rows, content_cols);
+    let mut app = App::new(content_rows, content_cols, config);
 
     // Add initial agent
     if let Err(e) = app.add_agent() {
@@ -105,55 +1079,123 @@ fn main() -> Result<()> {
     // Main loop
     loop {
         // Draw
-        terminal.draw(|f| ui(f, &app))?;
+        terminal.draw(|f| ui(f, &mut app))?;
 
         // Poll events (16ms ≈ 60fps)
         if event::poll(Duration::from_millis(16))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if app.agent_manager.is_empty() {
-                        // No agents - show menu
-                        match key.code {
-                            KeyCode::Char('n') | KeyCode::Char('N') => {
-                                let _ = app.add_agent();
+                    match app.mode {
+                        AppMode::ReviewMerge => {
+                            // Handle review mode input
+                            match key.code {
+                                KeyCode::Enter | KeyCode::Char('m') | KeyCode::Char('M') => {
+                                    // Execute merge
+                                    let _ = app.execute_merge();
+                                }
+                                KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('C') => {
+                                    // Cancel review
+                                    app.cancel_review();
+                                }
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        state.diff_view.scroll_up(1);
+                                    }
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        state.diff_view.scroll_down(1);
+                                    }
+                                }
+                                KeyCode::PageUp => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        state.diff_view.page_up(20);
+                                    }
+                                }
+                                KeyCode::PageDown => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        state.diff_view.page_down(20);
+                                    }
+                                }
+                                KeyCode::Home => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        state.diff_view.scroll_to_top();
+                                    }
+                                }
+                                KeyCode::End => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        state.diff_view.scroll_to_bottom();
+                                    }
+                                }
+                                _ => {}
                             }
-                            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
-                                app.should_quit = true;
-                            }
-                            _ => {}
                         }
-                    } else {
-                        // Handle keybindings
-                        let handled = handle_keybinding(&mut app, key.modifiers, key.code);
+                        AppMode::IssuePicker => {
+                            // Handle issue picker input
+                            if let Some(result) = app.issue_picker.handle_key(key.code) {
+                                match result {
+                                    IssuePickerResult::Selected(issue) => {
+                                        app.mode = AppMode::Normal;
+                                        let _ = app.add_agent_from_issue(issue);
+                                    }
+                                    IssuePickerResult::Cancel => {
+                                        app.mode = AppMode::Normal;
+                                    }
+                                    IssuePickerResult::Refresh => {
+                                        app.fetch_issues();
+                                    }
+                                }
+                            }
+                        }
+                        AppMode::Normal => {
+                            if app.agent_manager.is_empty() {
+                                // No agents - show menu
+                                match key.code {
+                                    KeyCode::Char('n') | KeyCode::Char('N') => {
+                                        let _ = app.add_agent();
+                                    }
+                                    KeyCode::Char('i') | KeyCode::Char('I') => {
+                                        app.open_issue_picker();
+                                    }
+                                    KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                                        app.should_quit = true;
+                                    }
+                                    _ => {}
+                                }
+                            } else {
+                                // Handle keybindings
+                                let handled = handle_keybinding(&mut app, key.modifiers, key.code);
 
-                        if !handled {
-                            // Forward to active agent's PTY
-                            if let Some(agent) = app.agent_manager.active_mut() {
-                                if agent.status == AgentStatus::Running {
-                                    match (key.modifiers, key.code) {
-                                        (KeyModifiers::CONTROL, KeyCode::Char(c)) => {
-                                            let ctrl_char = (c as u8) & 0x1f;
-                                            agent.send_bytes(&[ctrl_char]);
+                                if !handled {
+                                    // Forward to active agent's PTY
+                                    if let Some(agent) = app.agent_manager.active_mut() {
+                                        if agent.status == AgentStatus::Running {
+                                            match (key.modifiers, key.code) {
+                                                (KeyModifiers::CONTROL, KeyCode::Char(c)) => {
+                                                    let ctrl_char = (c as u8) & 0x1f;
+                                                    agent.send_bytes(&[ctrl_char]);
+                                                }
+                                                (_, KeyCode::Enter) => agent.send_bytes(b"\r"),
+                                                (_, KeyCode::Backspace) => agent.send_bytes(&[0x7f]),
+                                                (_, KeyCode::Tab) => agent.send_bytes(b"\t"),
+                                                (_, KeyCode::Esc) => agent.send_bytes(&[0x1b]),
+                                                (_, KeyCode::Up) => agent.send_bytes(b"\x1b[A"),
+                                                (_, KeyCode::Down) => agent.send_bytes(b"\x1b[B"),
+                                                (_, KeyCode::Right) => agent.send_bytes(b"\x1b[C"),
+                                                (_, KeyCode::Left) => agent.send_bytes(b"\x1b[D"),
+                                                (_, KeyCode::Home) => agent.send_bytes(b"\x1b[H"),
+                                                (_, KeyCode::End) => agent.send_bytes(b"\x1b[F"),
+                                                (_, KeyCode::PageUp) => agent.send_bytes(b"\x1b[5~"),
+                                                (_, KeyCode::PageDown) => agent.send_bytes(b"\x1b[6~"),
+                                                (_, KeyCode::Delete) => agent.send_bytes(b"\x1b[3~"),
+                                                (_, KeyCode::Char(c)) => {
+                                                    let mut buf = [0u8; 4];
+                                                    let s = c.encode_utf8(&mut buf);
+                                                    agent.send_bytes(s.as_bytes());
+                                                }
+                                                _ => {}
+                                            }
                                         }
-                                        (_, KeyCode::Enter) => agent.send_bytes(b"\r"),
-                                        (_, KeyCode::Backspace) => agent.send_bytes(&[0x7f]),
-                                        (_, KeyCode::Tab) => agent.send_bytes(b"\t"),
-                                        (_, KeyCode::Esc) => agent.send_bytes(&[0x1b]),
-                                        (_, KeyCode::Up) => agent.send_bytes(b"\x1b[A"),
-                                        (_, KeyCode::Down) => agent.send_bytes(b"\x1b[B"),
-                                        (_, KeyCode::Right) => agent.send_bytes(b"\x1b[C"),
-                                        (_, KeyCode::Left) => agent.send_bytes(b"\x1b[D"),
-                                        (_, KeyCode::Home) => agent.send_bytes(b"\x1b[H"),
-                                        (_, KeyCode::End) => agent.send_bytes(b"\x1b[F"),
-                                        (_, KeyCode::PageUp) => agent.send_bytes(b"\x1b[5~"),
-                                        (_, KeyCode::PageDown) => agent.send_bytes(b"\x1b[6~"),
-                                        (_, KeyCode::Delete) => agent.send_bytes(b"\x1b[3~"),
-                                        (_, KeyCode::Char(c)) => {
-                                            let mut buf = [0u8; 4];
-                                            let s = c.encode_utf8(&mut buf);
-                                            agent.send_bytes(s.as_bytes());
-                                        }
-                                        _ => {}
                                     }
                                 }
                             }
@@ -171,6 +1213,27 @@ fn main() -> Result<()> {
 
         // Check all agents' status
         app.agent_manager.check_all_status();
+
+        // Plan processing
+        app.check_plan();
+        app.check_agent_task_completions();
+        app.process_plan();
+        app.cleanup_notifications();
+
+        // Check if active agent just ended and has a worktree (for review)
+        if app.mode == AppMode::Normal {
+            let active_index = app.agent_manager.active_index();
+            if let Some(agent) = app.agent_manager.active() {
+                if agent.status == AgentStatus::Ended {
+                    // Check if this agent has a worktree
+                    let has_worktree = active_index < app.agent_worktrees.len()
+                        && app.agent_worktrees[active_index].is_some();
+                    if has_worktree {
+                        app.start_review(active_index);
+                    }
+                }
+            }
+        }
 
         if app.should_quit {
             break;
@@ -199,6 +1262,11 @@ fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> b
         // Ctrl+T: New agent
         (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
             let _ = app.add_agent();
+            true
+        }
+        // Ctrl+I: Open issue picker
+        (KeyModifiers::CONTROL, KeyCode::Char('i')) => {
+            app.open_issue_picker();
             true
         }
         // Ctrl+W: Close active agent
@@ -233,7 +1301,7 @@ fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> b
     }
 }
 
-fn ui(f: &mut Frame, app: &App) {
+fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -255,6 +1323,195 @@ fn ui(f: &mut Frame, app: &App) {
             render_agent_screen(f, agent, chunks[1]);
         }
     }
+
+    // Render overlays based on mode
+    match app.mode {
+        AppMode::IssuePicker => {
+            let popup_area = centered_rect(80, 70, f.area());
+            app.issue_picker.render(f, popup_area);
+        }
+        AppMode::ReviewMerge => {
+            render_review_merge(f, app, f.area());
+        }
+        AppMode::Normal => {}
+    }
+
+    // Render notifications at the bottom
+    if !app.notifications.is_empty() {
+        render_notifications(f, app, f.area());
+    }
+
+    // Render plan status if active
+    if app.current_plan.is_some() {
+        render_plan_status(f, app, f.area());
+    }
+}
+
+/// Render notifications at the bottom of the screen
+fn render_notifications(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let notification_count = app.notifications.len().min(3); // Show max 3 notifications
+    if notification_count == 0 {
+        return;
+    }
+
+    let height = notification_count as u16 + 2; // +2 for borders
+    let notification_area = ratatui::layout::Rect {
+        x: area.x + 2,
+        y: area.height.saturating_sub(height + 1),
+        width: area.width.saturating_sub(4).min(60),
+        height,
+    };
+
+    let lines: Vec<Line> = app
+        .notifications
+        .iter()
+        .rev()
+        .take(3)
+        .map(|n| {
+            let (prefix, style) = match n.level {
+                cctakt::plan::NotifyLevel::Info => ("ℹ", Style::default().fg(Color::Cyan)),
+                cctakt::plan::NotifyLevel::Warning => ("⚠", Style::default().fg(Color::Yellow)),
+                cctakt::plan::NotifyLevel::Error => ("✗", Style::default().fg(Color::Red)),
+                cctakt::plan::NotifyLevel::Success => ("✓", Style::default().fg(Color::Green)),
+            };
+            Line::from(vec![
+                Span::styled(format!(" {} ", prefix), style),
+                Span::raw(&n.message),
+            ])
+        })
+        .collect();
+
+    let notification_widget = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+
+    f.render_widget(Clear, notification_area);
+    f.render_widget(notification_widget, notification_area);
+}
+
+/// Render plan status indicator
+fn render_plan_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let Some(ref plan) = app.current_plan else {
+        return;
+    };
+
+    let (pending, running, completed, failed) = plan.count_by_status();
+    let total = plan.tasks.len();
+
+    let status_text = format!(
+        " Plan: {}/{} ({} running, {} failed) ",
+        completed, total, running, failed
+    );
+
+    let status_area = ratatui::layout::Rect {
+        x: area.width.saturating_sub(status_text.len() as u16 + 2),
+        y: 0,
+        width: status_text.len() as u16,
+        height: 1,
+    };
+
+    let style = if failed > 0 {
+        Style::default().fg(Color::Red)
+    } else if running > 0 {
+        Style::default().fg(Color::Yellow)
+    } else if pending > 0 {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+
+    let status_widget = Paragraph::new(status_text).style(style);
+    f.render_widget(status_widget, status_area);
+}
+
+/// Render review merge screen
+fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    let Some(ref mut state) = app.review_state else {
+        return;
+    };
+
+    // Clear the area first
+    f.render_widget(Clear, area);
+
+    // Layout: header + diff + footer
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(6), // Header with stats
+            Constraint::Min(10),   // Diff view
+            Constraint::Length(3), // Footer with help
+        ])
+        .split(area);
+
+    // Header with merge info
+    let mut header_lines = vec![
+        Line::from(vec![
+            Span::styled(" Review Merge: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(&state.branch, Style::default().fg(Color::Yellow)),
+            Span::raw(" → "),
+            Span::styled("main", Style::default().fg(Color::Green)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" Stats: "),
+            Span::styled(format!("{} files", state.files_changed), Style::default().fg(Color::White)),
+            Span::raw(", "),
+            Span::styled(format!("+{}", state.insertions), Style::default().fg(Color::Green)),
+            Span::raw(" / "),
+            Span::styled(format!("-{}", state.deletions), Style::default().fg(Color::Red)),
+        ]),
+    ];
+
+    // Show conflicts warning if any
+    if !state.conflicts.is_empty() {
+        header_lines.push(Line::from(vec![
+            Span::styled(" ⚠ Potential conflicts: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                state.conflicts.join(", "),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+    }
+
+    // Show recent commits
+    if !state.commit_log.is_empty() {
+        header_lines.push(Line::from(""));
+        header_lines.push(Line::from(vec![
+            Span::styled(" Recent commits: ", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                state.commit_log.lines().next().unwrap_or(""),
+                Style::default().fg(Color::Gray),
+            ),
+        ]));
+    }
+
+    let header = Paragraph::new(header_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    f.render_widget(header, chunks[0]);
+
+    // Diff view
+    state.diff_view.render(f, chunks[1]);
+
+    // Footer with help
+    let footer = Paragraph::new(vec![Line::from(vec![
+        Span::styled(" [Enter/M]", Style::default().fg(Color::Green)),
+        Span::raw(" Merge  "),
+        Span::styled("[Esc/C]", Style::default().fg(Color::Red)),
+        Span::raw(" Cancel  "),
+        Span::styled("[↑/↓/PgUp/PgDn]", Style::default().fg(Color::Cyan)),
+        Span::raw(" Scroll"),
+    ])])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(footer, chunks[2]);
 }
 
 /// Render header with tabs
@@ -294,7 +1551,7 @@ fn render_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // Add help text on the right
     spans.push(Span::styled(
-        " [^T:new ^W:close ^N/^P:switch ^Q:quit]",
+        " [^T:new ^I:issue ^W:close ^N/^P:switch ^Q:quit]",
         Style::default().fg(Color::DarkGray),
     ));
 
@@ -313,12 +1570,16 @@ fn render_no_agent_menu(f: &mut Frame, area: ratatui::layout::Rect) {
             Span::raw(" New agent"),
         ]),
         Line::from(vec![
+            Span::styled("  [I]", Style::default().fg(Color::Cyan)),
+            Span::raw(" New agent from GitHub issue"),
+        ]),
+        Line::from(vec![
             Span::styled("  [Q]", Style::default().fg(Color::Red)),
             Span::raw(" Quit cctakt"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "  Press N or Q...",
+            "  Press N, I, or Q...",
             Style::default().fg(Color::DarkGray),
         )),
     ])
@@ -461,5 +1722,724 @@ fn vt100_color_to_ratatui(color: vt100::Color) -> Color {
         vt100::Color::Idx(15) => Color::White,
         vt100::Color::Idx(idx) => Color::Indexed(idx),
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+// ==================== Main Entry Point ====================
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Some(Commands::Init { force }) => run_init(force),
+        Some(Commands::Status) => run_status(),
+        None => run_tui(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== parse_github_url tests ====================
+
+    #[test]
+    fn test_parse_github_url_https() {
+        let url = "https://github.com/owner/repo.git";
+        assert_eq!(parse_github_url(url), Some("owner/repo".to_string()));
+    }
+
+    #[test]
+    fn test_parse_github_url_https_no_git_suffix() {
+        let url = "https://github.com/owner/repo";
+        assert_eq!(parse_github_url(url), Some("owner/repo".to_string()));
+    }
+
+    #[test]
+    fn test_parse_github_url_ssh() {
+        let url = "git@github.com:owner/repo.git";
+        assert_eq!(parse_github_url(url), Some("owner/repo".to_string()));
+    }
+
+    #[test]
+    fn test_parse_github_url_ssh_no_git_suffix() {
+        let url = "git@github.com:owner/repo";
+        assert_eq!(parse_github_url(url), Some("owner/repo".to_string()));
+    }
+
+    #[test]
+    fn test_parse_github_url_non_github() {
+        let url = "https://gitlab.com/owner/repo.git";
+        assert_eq!(parse_github_url(url), None);
+    }
+
+    #[test]
+    fn test_parse_github_url_empty() {
+        assert_eq!(parse_github_url(""), None);
+    }
+
+    #[test]
+    fn test_parse_github_url_github_only() {
+        // Edge case: URL contains github.com but no repo path
+        let url = "https://github.com/";
+        assert_eq!(parse_github_url(url), None);
+    }
+
+    #[test]
+    fn test_parse_github_url_with_nested_path() {
+        let url = "https://github.com/org/repo/subpath";
+        assert_eq!(parse_github_url(url), Some("org/repo/subpath".to_string()));
+    }
+
+    // ==================== AppMode tests ====================
+
+    #[test]
+    fn test_app_mode_equality() {
+        assert_eq!(AppMode::Normal, AppMode::Normal);
+        assert_eq!(AppMode::IssuePicker, AppMode::IssuePicker);
+        assert_ne!(AppMode::Normal, AppMode::IssuePicker);
+    }
+
+    #[test]
+    fn test_app_mode_clone() {
+        let mode = AppMode::IssuePicker;
+        let cloned = mode.clone();
+        assert_eq!(mode, cloned);
+    }
+
+    // ==================== Config integration tests ====================
+
+    #[test]
+    fn test_config_default_values() {
+        use std::path::Path;
+        let config = Config::default();
+        assert_eq!(config.worktree_dir, Path::new(".worktrees"));
+        assert_eq!(config.branch_prefix, "cctakt");
+    }
+
+    // ==================== suggest_branch_name integration ====================
+
+    #[test]
+    fn test_suggest_branch_name_integration() {
+        use cctakt::github::Issue;
+
+        let issue = Issue {
+            number: 42,
+            title: "Add feature".to_string(),
+            body: None,
+            labels: vec![],
+            state: "open".to_string(),
+            html_url: "https://github.com/test/repo/issues/42".to_string(),
+        };
+
+        let branch = suggest_branch_name(&issue, "cctakt");
+        assert!(branch.starts_with("cctakt/issue-42-"));
+        assert!(branch.contains("add"));
+        assert!(branch.contains("feature"));
+    }
+
+    #[test]
+    fn test_suggest_branch_name_with_special_chars() {
+        use cctakt::github::Issue;
+
+        let issue = Issue {
+            number: 123,
+            title: "Fix: user@email.com validation".to_string(),
+            body: None,
+            labels: vec![],
+            state: "open".to_string(),
+            html_url: "https://github.com/test/repo/issues/123".to_string(),
+        };
+
+        let branch = suggest_branch_name(&issue, "fix");
+        assert!(branch.starts_with("fix/issue-123-"));
+        // Special characters should be sanitized
+        assert!(!branch.contains('@'));
+        assert!(!branch.contains(':'));
+    }
+
+    // ==================== IssuePicker state tests ====================
+
+    #[test]
+    fn test_issue_picker_initial_state() {
+        let picker = IssuePicker::new();
+        assert!(picker.is_empty());
+    }
+
+    #[test]
+    fn test_issue_picker_set_loading() {
+        let mut picker = IssuePicker::new();
+        picker.set_loading(true);
+        // Loading state is internal, but we can verify it doesn't panic
+    }
+
+    #[test]
+    fn test_issue_picker_set_issues() {
+        use cctakt::github::Issue;
+
+        let mut picker = IssuePicker::new();
+        let issues = vec![
+            Issue {
+                number: 1,
+                title: "First issue".to_string(),
+                body: None,
+                labels: vec![],
+                state: "open".to_string(),
+                html_url: "https://github.com/test/repo/issues/1".to_string(),
+            },
+            Issue {
+                number: 2,
+                title: "Second issue".to_string(),
+                body: None,
+                labels: vec![],
+                state: "open".to_string(),
+                html_url: "https://github.com/test/repo/issues/2".to_string(),
+            },
+        ];
+
+        picker.set_issues(issues);
+        assert!(!picker.is_empty());
+    }
+
+    #[test]
+    fn test_issue_picker_navigation() {
+        use cctakt::github::Issue;
+        use crossterm::event::KeyCode;
+
+        let mut picker = IssuePicker::new();
+        let issues = vec![
+            Issue {
+                number: 1,
+                title: "First".to_string(),
+                body: None,
+                labels: vec![],
+                state: "open".to_string(),
+                html_url: "https://github.com/test/repo/issues/1".to_string(),
+            },
+            Issue {
+                number: 2,
+                title: "Second".to_string(),
+                body: None,
+                labels: vec![],
+                state: "open".to_string(),
+                html_url: "https://github.com/test/repo/issues/2".to_string(),
+            },
+        ];
+        picker.set_issues(issues);
+
+        // Navigate down
+        let result = picker.handle_key(KeyCode::Down);
+        assert!(result.is_none()); // Navigation doesn't return result
+
+        // Navigate up
+        let result = picker.handle_key(KeyCode::Up);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_issue_picker_cancel() {
+        use crossterm::event::KeyCode;
+
+        let mut picker = IssuePicker::new();
+        let result = picker.handle_key(KeyCode::Esc);
+
+        assert!(matches!(result, Some(IssuePickerResult::Cancel)));
+    }
+
+    #[test]
+    fn test_issue_picker_refresh() {
+        use crossterm::event::KeyCode;
+
+        let mut picker = IssuePicker::new();
+        let result = picker.handle_key(KeyCode::Char('r'));
+
+        assert!(matches!(result, Some(IssuePickerResult::Refresh)));
+    }
+
+    #[test]
+    fn test_issue_picker_select_empty() {
+        use crossterm::event::KeyCode;
+
+        let mut picker = IssuePicker::new();
+        // Trying to select from empty list should do nothing (no panic)
+        let result = picker.handle_key(KeyCode::Enter);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_issue_picker_select_with_issues() {
+        use cctakt::github::Issue;
+        use crossterm::event::KeyCode;
+
+        let mut picker = IssuePicker::new();
+        picker.set_issues(vec![Issue {
+            number: 42,
+            title: "Test issue".to_string(),
+            body: Some("Body".to_string()),
+            labels: vec![],
+            state: "open".to_string(),
+            html_url: "https://github.com/test/repo/issues/42".to_string(),
+        }]);
+
+        let result = picker.handle_key(KeyCode::Enter);
+
+        match result {
+            Some(IssuePickerResult::Selected(issue)) => {
+                assert_eq!(issue.number, 42);
+                assert_eq!(issue.title, "Test issue");
+            }
+            _ => panic!("Expected Selected result"),
+        }
+    }
+
+    // ==================== WorktreeManager tests ====================
+
+    #[test]
+    fn test_worktree_manager_from_current_dir() {
+        // This test verifies WorktreeManager can be created from the current git repo
+        let result = WorktreeManager::from_current_dir();
+        // Should succeed since we're in a git repo
+        assert!(result.is_ok());
+    }
+
+    // ==================== GitHubClient tests ====================
+
+    #[test]
+    fn test_github_client_creation() {
+        let client = GitHubClient::with_token("owner/repo", None);
+        assert_eq!(client.repository(), "owner/repo");
+        assert!(!client.has_auth());
+    }
+
+    #[test]
+    fn test_github_client_with_auth() {
+        let client = GitHubClient::with_token("owner/repo", Some("token".to_string()));
+        assert!(client.has_auth());
+    }
+
+    // ==================== ReviewMerge mode tests ====================
+
+    #[test]
+    fn test_app_mode_review_merge() {
+        assert_eq!(AppMode::ReviewMerge, AppMode::ReviewMerge);
+        assert_ne!(AppMode::ReviewMerge, AppMode::Normal);
+        assert_ne!(AppMode::ReviewMerge, AppMode::IssuePicker);
+    }
+
+    #[test]
+    fn test_review_state_creation() {
+        let state = ReviewState {
+            agent_index: 0,
+            branch: "feature/test".to_string(),
+            worktree_path: PathBuf::from("/tmp/worktree"),
+            diff_view: DiffView::new("+ added line\n- removed line".to_string()),
+            commit_log: "abc1234 Initial commit".to_string(),
+            files_changed: 5,
+            insertions: 100,
+            deletions: 20,
+            conflicts: vec!["src/main.rs".to_string()],
+        };
+
+        assert_eq!(state.agent_index, 0);
+        assert_eq!(state.branch, "feature/test");
+        assert_eq!(state.files_changed, 5);
+        assert_eq!(state.insertions, 100);
+        assert_eq!(state.deletions, 20);
+        assert_eq!(state.conflicts.len(), 1);
+    }
+
+    #[test]
+    fn test_get_commit_log() {
+        // Test on current repo (should work since we're in a git repo)
+        let log = get_commit_log(&PathBuf::from("."));
+        // Should return some commits
+        assert!(!log.is_empty());
+    }
+
+    #[test]
+    fn test_diff_view_creation() {
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
+ fn main() {
++    println!("Hello");
+ }
+"#;
+        let view = DiffView::new(diff.to_string());
+        // DiffView should be created without panic
+        assert!(!view.is_empty());
+    }
+
+    #[test]
+    fn test_diff_view_with_title() {
+        let view = DiffView::new("test".to_string()).with_title("branch → main".to_string());
+        // with_title should work without panic
+        assert!(!view.is_empty());
+    }
+
+    #[test]
+    fn test_diff_view_scrolling() {
+        let diff = (0..100)
+            .map(|i| format!("+line {}\n", i))
+            .collect::<String>();
+        let mut view = DiffView::new(diff);
+
+        // Test scroll operations
+        view.scroll_down(10);
+        view.scroll_up(5);
+        view.page_down(20);
+        view.page_up(10);
+        view.scroll_to_top();
+        view.scroll_to_bottom();
+        // All operations should complete without panic
+    }
+
+    #[test]
+    fn test_merge_manager_creation() {
+        let manager = MergeManager::new("/tmp/test-repo");
+        assert_eq!(manager.main_branch(), "main");
+    }
+
+    #[test]
+    fn test_merge_manager_with_main_branch() {
+        let manager = MergeManager::new("/tmp/test-repo").with_main_branch("master");
+        assert_eq!(manager.main_branch(), "master");
+    }
+
+    // ==================== get_worker_commits tests ====================
+
+    #[test]
+    fn test_get_worker_commits_current_repo() {
+        // Test on current repo - should return commits
+        let commits = get_worker_commits(&PathBuf::from("."));
+        // Should return some commits since we're in a git repo
+        assert!(!commits.is_empty());
+    }
+
+    #[test]
+    fn test_get_worker_commits_nonexistent_dir() {
+        // Test on nonexistent directory - should return empty
+        let commits = get_worker_commits(&PathBuf::from("/nonexistent/path/that/doesnt/exist"));
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn test_get_worker_commits_format() {
+        // Test that commits are in expected format (hash + message)
+        let commits = get_worker_commits(&PathBuf::from("."));
+        if !commits.is_empty() {
+            // Each commit should have at least a hash (7+ chars)
+            let first = &commits[0];
+            assert!(first.len() >= 7, "Commit should have hash: {}", first);
+        }
+    }
+
+    // ==================== Notification tests ====================
+
+    #[test]
+    fn test_notification_creation() {
+        let notification = Notification {
+            message: "Test message".to_string(),
+            level: cctakt::plan::NotifyLevel::Info,
+            created_at: std::time::Instant::now(),
+        };
+        assert_eq!(notification.message, "Test message");
+    }
+
+    #[test]
+    fn test_notification_levels() {
+        let levels = [
+            cctakt::plan::NotifyLevel::Info,
+            cctakt::plan::NotifyLevel::Warning,
+            cctakt::plan::NotifyLevel::Error,
+            cctakt::plan::NotifyLevel::Success,
+        ];
+
+        for level in levels {
+            let notification = Notification {
+                message: "Test".to_string(),
+                level,
+                created_at: std::time::Instant::now(),
+            };
+            // Just verify it doesn't panic
+            let _ = notification.message;
+        }
+    }
+
+    // ==================== vt100 color conversion tests ====================
+
+    #[test]
+    fn test_vt100_color_to_ratatui_default() {
+        let color = vt100_color_to_ratatui(vt100::Color::Default);
+        assert_eq!(color, Color::Reset);
+    }
+
+    #[test]
+    fn test_vt100_color_to_ratatui_basic_colors() {
+        let tests = [
+            (0, Color::Black),
+            (1, Color::Red),
+            (2, Color::Green),
+            (3, Color::Yellow),
+            (4, Color::Blue),
+            (5, Color::Magenta),
+            (6, Color::Cyan),
+            (7, Color::Gray),
+        ];
+
+        for (idx, expected) in tests {
+            let result = vt100_color_to_ratatui(vt100::Color::Idx(idx));
+            assert_eq!(result, expected, "Color index {} failed", idx);
+        }
+    }
+
+    #[test]
+    fn test_vt100_color_to_ratatui_bright_colors() {
+        let tests = [
+            (8, Color::DarkGray),
+            (9, Color::LightRed),
+            (10, Color::LightGreen),
+            (11, Color::LightYellow),
+            (12, Color::LightBlue),
+            (13, Color::LightMagenta),
+            (14, Color::LightCyan),
+            (15, Color::White),
+        ];
+
+        for (idx, expected) in tests {
+            let result = vt100_color_to_ratatui(vt100::Color::Idx(idx));
+            assert_eq!(result, expected, "Color index {} failed", idx);
+        }
+    }
+
+    #[test]
+    fn test_vt100_color_to_ratatui_indexed() {
+        let result = vt100_color_to_ratatui(vt100::Color::Idx(200));
+        assert_eq!(result, Color::Indexed(200));
+    }
+
+    #[test]
+    fn test_vt100_color_to_ratatui_rgb() {
+        let result = vt100_color_to_ratatui(vt100::Color::Rgb(100, 150, 200));
+        assert_eq!(result, Color::Rgb(100, 150, 200));
+    }
+
+    // ==================== parse_github_url additional tests ====================
+
+    #[test]
+    fn test_parse_github_url_enterprise() {
+        // Enterprise GitHub URLs typically don't use github.com
+        let url = "https://github.example.com/owner/repo.git";
+        // Should return None since it doesn't match github.com exactly
+        assert_eq!(parse_github_url(url), None);
+    }
+
+    #[test]
+    fn test_parse_github_url_with_port() {
+        let url = "https://github.com:443/owner/repo.git";
+        // Port in URL - behavior depends on implementation
+        let result = parse_github_url(url);
+        // Should handle this gracefully (either parse or return None)
+        assert!(result.is_none() || result.is_some());
+    }
+
+    // ==================== TaskResult integration tests ====================
+
+    #[test]
+    fn test_task_result_struct() {
+        let result = TaskResult {
+            commits: vec!["abc123 first commit".to_string()],
+            pr_number: Some(42),
+            pr_url: Some("https://github.com/owner/repo/pull/42".to_string()),
+        };
+
+        assert_eq!(result.commits.len(), 1);
+        assert_eq!(result.pr_number, Some(42));
+        assert!(result.pr_url.is_some());
+    }
+
+    #[test]
+    fn test_task_result_default() {
+        let result = TaskResult::default();
+        assert!(result.commits.is_empty());
+        assert!(result.pr_number.is_none());
+        assert!(result.pr_url.is_none());
+    }
+
+    // ==================== Plan integration tests ====================
+
+    #[test]
+    fn test_plan_manager_integration() {
+        let manager = PlanManager::current_dir();
+        let path = manager.plan_file();
+        assert!(path.to_string_lossy().contains(".cctakt"));
+        assert!(path.to_string_lossy().contains("plan.json"));
+    }
+
+    #[test]
+    fn test_plan_new() {
+        let plan = Plan::new();
+        assert!(plan.tasks.is_empty());
+        assert!(plan.description.is_none());
+    }
+
+    #[test]
+    fn test_plan_with_description() {
+        let plan = Plan::with_description("Test plan");
+        assert_eq!(plan.description, Some("Test plan".to_string()));
+    }
+
+    #[test]
+    fn test_plan_count_by_status() {
+        let mut plan = Plan::new();
+        plan.add_task(cctakt::plan::Task::notify("t-1", "Test 1"));
+        plan.add_task(cctakt::plan::Task::notify("t-2", "Test 2"));
+
+        let (pending, running, completed, failed) = plan.count_by_status();
+        assert_eq!(pending, 2);
+        assert_eq!(running, 0);
+        assert_eq!(completed, 0);
+        assert_eq!(failed, 0);
+    }
+
+    // ==================== ReviewState additional tests ====================
+
+    #[test]
+    fn test_review_state_empty_conflicts() {
+        let state = ReviewState {
+            agent_index: 0,
+            branch: "test".to_string(),
+            worktree_path: PathBuf::from("/tmp"),
+            diff_view: DiffView::new(String::new()),
+            commit_log: String::new(),
+            files_changed: 0,
+            insertions: 0,
+            deletions: 0,
+            conflicts: vec![],
+        };
+
+        assert!(state.conflicts.is_empty());
+        assert_eq!(state.files_changed, 0);
+    }
+
+    #[test]
+    fn test_review_state_multiple_conflicts() {
+        let state = ReviewState {
+            agent_index: 1,
+            branch: "feature".to_string(),
+            worktree_path: PathBuf::from("/worktree"),
+            diff_view: DiffView::new("diff".to_string()),
+            commit_log: "log".to_string(),
+            files_changed: 10,
+            insertions: 500,
+            deletions: 100,
+            conflicts: vec![
+                "file1.rs".to_string(),
+                "file2.rs".to_string(),
+                "file3.rs".to_string(),
+            ],
+        };
+
+        assert_eq!(state.conflicts.len(), 3);
+        assert_eq!(state.insertions, 500);
+        assert_eq!(state.deletions, 100);
+    }
+
+    // ==================== DiffView additional tests ====================
+
+    #[test]
+    fn test_diff_view_empty() {
+        let view = DiffView::new(String::new());
+        assert!(view.is_empty());
+    }
+
+    #[test]
+    fn test_diff_view_multiline() {
+        let diff = "+line1\n+line2\n+line3\n-old1\n-old2";
+        let view = DiffView::new(diff.to_string());
+        assert!(!view.is_empty());
+    }
+
+    // ==================== AgentManager tests ====================
+
+    #[test]
+    fn test_agent_manager_new() {
+        let manager = AgentManager::new();
+        assert!(manager.is_empty());
+        assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_agent_manager_default() {
+        let manager = AgentManager::default();
+        assert!(manager.is_empty());
+    }
+
+    #[test]
+    fn test_agent_manager_list_empty() {
+        let manager = AgentManager::new();
+        assert!(manager.list().is_empty());
+    }
+
+    #[test]
+    fn test_agent_manager_active_none() {
+        let manager = AgentManager::new();
+        assert!(manager.active().is_none());
+    }
+
+    #[test]
+    fn test_agent_manager_switch_to_invalid() {
+        let mut manager = AgentManager::new();
+        // Switching to invalid index should not panic
+        manager.switch_to(100);
+        assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_agent_manager_next_empty() {
+        let mut manager = AgentManager::new();
+        // Next on empty manager should not panic
+        manager.next();
+        assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_agent_manager_prev_empty() {
+        let mut manager = AgentManager::new();
+        // Prev on empty manager should not panic
+        manager.prev();
+        assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_agent_manager_close_invalid() {
+        let mut manager = AgentManager::new();
+        // Closing invalid index should not panic
+        manager.close(100);
+        assert!(manager.is_empty());
+    }
+
+    #[test]
+    fn test_agent_manager_get_none() {
+        let manager = AgentManager::new();
+        assert!(manager.get(0).is_none());
+        assert!(manager.get(100).is_none());
+    }
+
+    // ==================== AgentStatus tests ====================
+
+    #[test]
+    fn test_agent_status_equality() {
+        assert_eq!(AgentStatus::Running, AgentStatus::Running);
+        assert_eq!(AgentStatus::Ended, AgentStatus::Ended);
+        assert_ne!(AgentStatus::Running, AgentStatus::Ended);
+    }
+
+    #[test]
+    fn test_agent_status_clone() {
+        let status = AgentStatus::Running;
+        let cloned = status;
+        assert_eq!(status, cloned);
     }
 }

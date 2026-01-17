@@ -7,6 +7,7 @@
 //!
 //! ## Core
 //! - [`worktree`] - Git worktree lifecycle management
+//! - [`plan`] - Execution plan management for orchestrator communication
 //!
 //! ## UI Components
 //! - [`dialog`] - Input dialog widget for user input
@@ -21,9 +22,13 @@
 //! - [`github`] - GitHub API client
 //! - [`config`] - Configuration file support
 //! - [`template`] - Task template generation
+//!
+//! ## LLM Integration
+//! - [`anthropic`] - Anthropic API client for PR descriptions
 
 // Core
 pub mod worktree;
+pub mod plan;
 
 // UI Components
 pub mod dialog;
@@ -39,13 +44,18 @@ pub mod config;
 pub mod github;
 pub mod template;
 
+// LLM Integration
+pub mod anthropic;
+
 // Re-export commonly used types
 pub use worktree::{WorktreeInfo, WorktreeManager};
+pub use plan::{Plan, PlanManager, Task, TaskAction, TaskResult, TaskStatus};
 pub use dialog::{DialogResult, InputDialog};
 pub use diffview::DiffView;
 pub use merge::{MergeManager, MergePreview};
 pub use statusbar::{AgentStatusInfo, AgentStatusKind, StatusBar};
-pub use config::{Config, GitHubConfig, KeyBindings};
+pub use config::{Config, GitHubConfig, AnthropicConfig, KeyBindings};
 pub use github::{GitHubClient, Issue, Label};
 pub use issue_picker::{IssuePicker, IssuePickerResult};
 pub use template::{TaskTemplate, render_task, suggest_branch_name, suggest_commit_message};
+pub use anthropic::AnthropicClient;
