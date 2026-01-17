@@ -2288,20 +2288,24 @@ fn render_agent_screen_non_interactive(f: &mut Frame, agent: &agent::Agent, area
     let content_height = area.height.saturating_sub(2) as usize;
     let output = agent.screen_text();
 
-    // Get the last N lines to fit in the viewport
-    let all_lines: Vec<&str> = output.lines().collect();
-    let start = all_lines.len().saturating_sub(content_height);
-    let visible_lines: Vec<Line> = all_lines[start..]
-        .iter()
-        .map(|line| {
+    // Parse and filter JSON events (skip uninteresting ones)
+    let all_lines: Vec<Line> = output
+        .lines()
+        .filter_map(|line| {
             // Parse JSON for prettier display
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
                 format_json_event(&json)
+            } else if !line.trim().is_empty() {
+                Some(Line::from(Span::raw(line.to_string())))
             } else {
-                Line::from(Span::raw(*line))
+                None
             }
         })
         .collect();
+
+    // Get the last N lines to fit in the viewport
+    let start = all_lines.len().saturating_sub(content_height);
+    let visible_lines: Vec<Line> = all_lines[start..].to_vec();
 
     // Show status indicator
     let status_style = match agent.work_state {
@@ -2400,20 +2404,25 @@ fn vt100_color_to_ratatui(color: vt100::Color) -> Color {
 }
 
 /// Format a JSON stream event for display
-fn format_json_event(json: &serde_json::Value) -> Line<'static> {
+/// Returns None if the event should be skipped
+fn format_json_event(json: &serde_json::Value) -> Option<Line<'static>> {
     let event_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
 
     match event_type {
         "system" => {
             let subtype = json.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
-            Line::from(vec![
+            Some(Line::from(vec![
                 Span::styled("[SYS] ", Style::default().fg(Color::Blue)),
                 Span::raw(subtype.to_string()),
-            ])
+            ]))
+        }
+        "user" => {
+            // Skip user events (echo of input, not useful to display)
+            None
         }
         "assistant" => {
-            // Extract text from message content
-            let text = json
+            // Extract only text content (skip tool_use which is not informative)
+            let text: String = json
                 .get("message")
                 .and_then(|m| m.get("content"))
                 .and_then(|c| c.as_array())
@@ -2422,17 +2431,19 @@ fn format_json_event(json: &serde_json::Value) -> Line<'static> {
                         .filter_map(|block| {
                             if block.get("type").and_then(|t| t.as_str()) == Some("text") {
                                 block.get("text").and_then(|t| t.as_str())
-                            } else if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                                let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-                                Some(name)
                             } else {
-                                None
+                                None // Skip tool_use, tool_result, etc.
                             }
                         })
                         .collect::<Vec<_>>()
                         .join(" ")
                 })
                 .unwrap_or_default();
+
+            // Skip if no text content (only tool calls)
+            if text.trim().is_empty() {
+                return None;
+            }
 
             // Truncate long text (char-safe for UTF-8)
             let display_text: String = if text.chars().count() > 80 {
@@ -2441,10 +2452,10 @@ fn format_json_event(json: &serde_json::Value) -> Line<'static> {
                 text
             };
 
-            Line::from(vec![
+            Some(Line::from(vec![
                 Span::styled("[AI] ", Style::default().fg(Color::Cyan)),
                 Span::raw(display_text),
-            ])
+            ]))
         }
         "result" => {
             let subtype = json.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
@@ -2453,12 +2464,12 @@ fn format_json_event(json: &serde_json::Value) -> Line<'static> {
             } else {
                 Style::default().fg(Color::Red)
             };
-            Line::from(vec![
+            Some(Line::from(vec![
                 Span::styled("[DONE] ", style),
                 Span::raw(subtype.to_string()),
-            ])
+            ]))
         }
-        _ => Line::from(Span::raw(format!("[{event_type}]"))),
+        _ => None, // Skip unknown event types
     }
 }
 
@@ -2567,13 +2578,10 @@ fn run_plan(plan_path: PathBuf) -> Result<()> {
                             println!("[SYS] {subtype}");
                         }
                         "assistant" => {
-                            // Extract tool uses
+                            // Extract only text content (skip tool_use)
                             if let Some(content) = json.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
                                 for block in content {
-                                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                                        let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-                                        println!("[TOOL] {name}");
-                                    } else if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                    if block.get("type").and_then(|t| t.as_str()) == Some("text") {
                                         if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
                                             let preview: String = text.chars().take(100).collect();
                                             if !preview.trim().is_empty() {
