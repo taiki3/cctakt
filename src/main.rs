@@ -1815,9 +1815,13 @@ fn run_tui() -> Result<()> {
                                 let handled = handle_keybinding(&mut app, key.modifiers, key.code);
 
                                 if !handled {
+                                    // Debug: log current mode and key
+                                    debug::log(&format!("Key: {:?}, Mode: {:?}, InputMode: {:?}", key.code, app.mode, app.input_mode));
+
                                     match app.input_mode {
                                         InputMode::Navigation => {
                                             // Navigation mode: hjkl for pane navigation
+                                            debug::log("Processing Navigation mode key");
                                             match key.code {
                                                 KeyCode::Char('h') => {
                                                     app.focused_pane = FocusedPane::Left;
@@ -1845,7 +1849,9 @@ fn run_tui() -> Result<()> {
                                         InputMode::Input => {
                                             // Input mode: forward keys to focused agent
                                             // Esc switches back to navigation mode
+                                            debug::log("Processing Input mode key");
                                             if key.code == KeyCode::Esc {
+                                                debug::log("Esc pressed - switching to Navigation mode");
                                                 app.input_mode = InputMode::Navigation;
                                             } else {
                                                 // Determine which agent to send input to
