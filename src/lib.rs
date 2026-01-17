@@ -64,7 +64,7 @@ pub use issue_picker::{IssuePicker, IssuePickerResult};
 pub use template::{TaskTemplate, render_task, suggest_branch_name, suggest_commit_message};
 pub use anthropic::AnthropicClient;
 pub use theme::{
-    theme, set_theme, create_theme, ColorTheme,
+    theme, set_theme, create_theme, available_themes, current_theme_id, ColorTheme,
     CyberpunkTheme, MonokaiTheme, DraculaTheme, NordTheme, MinimalTheme,
 };
 #[allow(deprecated)]
