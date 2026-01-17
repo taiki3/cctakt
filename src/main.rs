@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use cctakt::{
     available_themes, create_theme, current_theme_id, debug, issue_picker::centered_rect,
     render_task, set_theme, suggest_branch_name, theme, Config, DiffView, GitHubClient, Issue,
-    IssuePicker, IssuePickerResult, MergeManager, Plan, PlanManager, TaskAction, TaskResult,
-    TaskStatus, WorktreeManager,
+    IssuePicker, IssuePickerResult, LockFile, MergeManager, Plan, PlanManager, TaskAction,
+    TaskResult, TaskStatus, WorktreeManager,
 };
 use clap::{Parser, Subcommand};
 use crossterm::{
@@ -1660,6 +1660,10 @@ fn run_status() -> Result<()> {
 
 /// Run the TUI application
 fn run_tui() -> Result<()> {
+    // Acquire lock to prevent duplicate instances
+    // The lock is automatically released when _lock goes out of scope
+    let _lock = LockFile::acquire()?;
+
     // Load configuration
     let config = Config::load().unwrap_or_default();
 
