@@ -21,6 +21,10 @@ pub struct Config {
     #[serde(default = "default_branch_prefix")]
     pub branch_prefix: String,
 
+    /// Color theme name: "cyberpunk", "monokai", "dracula", "nord", "minimal"
+    #[serde(default = "default_theme")]
+    pub theme: String,
+
     /// GitHub configuration
     #[serde(default)]
     pub github: GitHubConfig,
@@ -39,11 +43,16 @@ impl Default for Config {
         Self {
             worktree_dir: default_worktree_dir(),
             branch_prefix: default_branch_prefix(),
+            theme: default_theme(),
             github: GitHubConfig::default(),
             anthropic: AnthropicConfig::default(),
             keybindings: KeyBindings::default(),
         }
     }
+}
+
+fn default_theme() -> String {
+    "cyberpunk".to_string()
 }
 
 /// GitHub-related configuration
@@ -233,6 +242,7 @@ mod tests {
 
         assert_eq!(config.worktree_dir, PathBuf::from(".worktrees"));
         assert_eq!(config.branch_prefix, "cctakt");
+        assert_eq!(config.theme, "cyberpunk");
         assert!(!config.github.auto_fetch_issues);
         assert!(config.github.repository.is_none());
         assert!(config.github.labels.is_empty());
@@ -358,5 +368,35 @@ auto_generate_pr_description = false
         assert_eq!(config.model, "claude-sonnet-4-20250514");
         assert_eq!(config.max_tokens, 1024);
         assert!(config.auto_generate_pr_description);
+    }
+
+    #[test]
+    fn test_theme_config() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(
+            temp_file,
+            r#"
+theme = "dracula"
+"#
+        )
+        .unwrap();
+
+        let config = Config::load_from(temp_file.path()).unwrap();
+        assert_eq!(config.theme, "dracula");
+    }
+
+    #[test]
+    fn test_theme_config_default() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(
+            temp_file,
+            r#"
+branch_prefix = "test"
+"#
+        )
+        .unwrap();
+
+        let config = Config::load_from(temp_file.path()).unwrap();
+        assert_eq!(config.theme, "cyberpunk");
     }
 }

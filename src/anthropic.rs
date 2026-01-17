@@ -66,6 +66,7 @@ struct ContentBlock {
 #[derive(Debug, Deserialize)]
 struct MessagesResponse {
     content: Vec<ContentBlock>,
+    #[allow(dead_code)]
     model: String,
     stop_reason: Option<String>,
     usage: Usage,

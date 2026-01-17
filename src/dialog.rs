@@ -3,7 +3,7 @@
 //! Provides a generic input dialog widget for user input operations
 //! such as adding agents, entering task descriptions, etc.
 
-use crate::theme::Theme;
+use crate::theme::theme;
 use crossterm::event::KeyCode;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -153,6 +153,8 @@ impl InputDialog {
             return;
         }
 
+        let t = theme();
+
         // Calculate dialog dimensions
         let dialog_width = 50.min(area.width.saturating_sub(4));
         let dialog_height = 9;
@@ -167,8 +169,8 @@ impl InputDialog {
         let block = Block::default()
             .title(format!(" {} ", self.title))
             .borders(Borders::ALL)
-            .border_style(Theme::style_dialog_border())
-            .style(Theme::style_dialog_bg());
+            .border_style(t.style_dialog_border())
+            .style(t.style_dialog_bg());
 
         f.render_widget(block.clone(), dialog_area);
 
@@ -190,7 +192,7 @@ impl InputDialog {
 
         // Prompt text
         let prompt = Paragraph::new(self.prompt.as_str())
-            .style(Theme::style_text());
+            .style(t.style_text());
         f.render_widget(prompt, chunks[0]);
 
         // Input field with cursor
@@ -202,7 +204,7 @@ impl InputDialog {
                 Span::raw(before),
                 Span::styled(
                     cursor_char.to_string(),
-                    Theme::style_cursor(),
+                    t.style_cursor(),
                 ),
                 Span::raw(remaining),
             ])
@@ -211,25 +213,25 @@ impl InputDialog {
                 Span::raw(&self.input),
                 Span::styled(
                     " ",
-                    Theme::style_cursor(),
+                    t.style_cursor(),
                 ),
             ])
         };
 
         let input_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Theme::style_border_muted());
+            .border_style(t.style_border_muted());
 
         let input_field = Paragraph::new(input_display)
             .block(input_block)
-            .style(Theme::style_input());
+            .style(t.style_input());
         f.render_widget(input_field, chunks[2]);
 
         // Help text
         let help = Paragraph::new(Line::from(vec![
-            Span::styled("[Enter]", Theme::style_success()),
+            Span::styled("[Enter]", t.style_success()),
             Span::raw(" Submit  "),
-            Span::styled("[Esc]", Theme::style_error()),
+            Span::styled("[Esc]", t.style_error()),
             Span::raw(" Cancel"),
         ]))
         .alignment(Alignment::Center);

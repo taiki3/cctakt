@@ -62,8 +62,10 @@ struct NonInteractiveState {
 
 /// Represents a single Claude Code session
 pub struct Agent {
+    #[allow(dead_code)]
     pub id: usize,
     pub name: String,
+    #[allow(dead_code)]
     pub working_dir: PathBuf,
     pub status: AgentStatus,
     pub work_state: WorkState,
@@ -205,15 +207,13 @@ impl Agent {
         let output_buffer_clone = Arc::clone(&output_buffer);
         let output_thread = std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    if let Ok(mut p) = parser_clone.lock() {
-                        p.feed(&format!("{}\n", line));
-                    }
-                    if let Ok(mut buf) = output_buffer_clone.lock() {
-                        buf.push_str(&line);
-                        buf.push('\n');
-                    }
+            for line in reader.lines().map_while(Result::ok) {
+                if let Ok(mut p) = parser_clone.lock() {
+                    p.feed(&format!("{line}\n"));
+                }
+                if let Ok(mut buf) = output_buffer_clone.lock() {
+                    buf.push_str(&line);
+                    buf.push('\n');
                 }
             }
         });
@@ -221,10 +221,8 @@ impl Agent {
         // Spawn stderr reading thread
         std::thread::spawn(move || {
             let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    eprintln!("[agent stderr] {}", line);
-                }
+            for line in reader.lines().map_while(Result::ok) {
+                eprintln!("[agent stderr] {line}");
             }
         });
 
@@ -302,7 +300,7 @@ impl Agent {
                                     }
                                 }
                                 if !exit_status.success() && self.error.is_none() {
-                                    self.error = Some(format!("Process exited with status: {}", exit_status));
+                                    self.error = Some(format!("Process exited with status: {exit_status}"));
                                 }
                             }
                         }
@@ -449,6 +447,7 @@ impl Agent {
     }
 
     /// Get stream events (non-interactive mode only)
+    #[allow(dead_code)]
     pub fn events(&self) -> Vec<StreamEvent> {
         if let Some(ref state) = self.non_interactive {
             if let Ok(p) = state.parser.lock() {
@@ -459,11 +458,13 @@ impl Agent {
     }
 
     /// Check if completed successfully (non-interactive mode)
+    #[allow(dead_code)]
     pub fn is_success(&self) -> bool {
         self.work_state == WorkState::Completed && self.error.is_none()
     }
 
     /// Check if completed with error (non-interactive mode)
+    #[allow(dead_code)]
     pub fn is_error(&self) -> bool {
         self.work_state == WorkState::Completed && self.error.is_some()
     }
@@ -644,14 +645,14 @@ mod tests {
     #[test]
     fn test_agent_status_clone() {
         let status = AgentStatus::Ended;
-        let cloned = status.clone();
+        let cloned = status;
         assert_eq!(status, cloned);
     }
 
     #[test]
     fn test_agent_status_debug() {
         let status = AgentStatus::Running;
-        let debug_str = format!("{:?}", status);
+        let debug_str = format!("{status:?}");
         assert!(debug_str.contains("Running"));
     }
 

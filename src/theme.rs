@@ -1,275 +1,795 @@
-//! Cyberpunk color theme module for cctakt
+//! Color theme module for cctakt
 //!
-//! Provides a neon-infused color palette inspired by cyberpunk aesthetics.
+//! Provides multiple color themes with a trait-based design for easy switching.
+//! Themes include Cyberpunk (default), Monokai, Dracula, Nord, and Minimal.
 
 use ratatui::style::{Color, Modifier, Style};
+use std::sync::OnceLock;
 
-/// Cyberpunk color palette
-///
-/// A carefully crafted palette featuring neon colors against dark backgrounds,
-/// inspired by the cyberpunk aesthetic.
-pub struct CyberpunkTheme;
+// ==================== ColorTheme Trait ====================
 
-impl CyberpunkTheme {
-    // ==================== Primary Neon Colors ====================
+/// Color theme trait defining all theme colors and styles
+pub trait ColorTheme: Send + Sync {
+    // ==================== Neon/Accent Colors ====================
 
-    /// Hot neon pink - primary accent color
-    pub const NEON_PINK: Color = Color::Rgb(255, 0, 128);
+    /// Primary accent color (hot pink in Cyberpunk)
+    fn neon_pink(&self) -> Color;
 
-    /// Electric cyan - secondary accent color
-    pub const NEON_CYAN: Color = Color::Rgb(0, 255, 255);
+    /// Secondary accent color (cyan in Cyberpunk)
+    fn neon_cyan(&self) -> Color;
 
-    /// Vivid purple - tertiary accent color
-    pub const NEON_PURPLE: Color = Color::Rgb(157, 78, 221);
+    /// Tertiary accent color (purple in Cyberpunk)
+    fn neon_purple(&self) -> Color;
 
-    /// Toxic green - success/active indicator
-    pub const NEON_GREEN: Color = Color::Rgb(57, 255, 20);
+    /// Success/active color (green in Cyberpunk)
+    fn neon_green(&self) -> Color;
 
-    /// Warning yellow - attention grabbing
-    pub const NEON_YELLOW: Color = Color::Rgb(255, 255, 0);
+    /// Warning color (yellow in Cyberpunk)
+    fn neon_yellow(&self) -> Color;
 
-    /// Hot orange - for warnings and highlights
-    pub const NEON_ORANGE: Color = Color::Rgb(255, 165, 0);
+    /// Highlight color (orange in Cyberpunk)
+    fn neon_orange(&self) -> Color;
 
-    /// Electric blue - for information
-    pub const NEON_BLUE: Color = Color::Rgb(0, 191, 255);
+    /// Info color (blue in Cyberpunk)
+    fn neon_blue(&self) -> Color;
 
     // ==================== Background Colors ====================
 
-    /// Deep dark background - main background
-    pub const BG_DARK: Color = Color::Rgb(13, 13, 26);
+    /// Main background color
+    fn bg_dark(&self) -> Color;
 
-    /// Slightly lighter background for panels
-    pub const BG_PANEL: Color = Color::Rgb(26, 26, 46);
+    /// Panel background color
+    fn bg_panel(&self) -> Color;
 
-    /// Elevated surface color
-    pub const BG_SURFACE: Color = Color::Rgb(35, 35, 60);
+    /// Surface/elevated background color
+    fn bg_surface(&self) -> Color;
 
-    /// Highlight background
-    pub const BG_HIGHLIGHT: Color = Color::Rgb(50, 50, 80);
-
-    // ==================== Diff Colors ====================
-
-    /// Addition background - dark green tint
-    pub const DIFF_ADD_BG: Color = Color::Rgb(0, 50, 20);
-
-    /// Deletion background - dark red tint
-    pub const DIFF_DEL_BG: Color = Color::Rgb(50, 0, 20);
+    /// Highlight background color
+    fn bg_highlight(&self) -> Color;
 
     // ==================== Text Colors ====================
 
-    /// Primary text color - bright white
-    pub const TEXT_PRIMARY: Color = Color::Rgb(230, 230, 240);
+    /// Primary text color
+    fn text_primary(&self) -> Color;
 
-    /// Secondary text color - muted
-    pub const TEXT_SECONDARY: Color = Color::Rgb(140, 140, 160);
+    /// Secondary text color
+    fn text_secondary(&self) -> Color;
 
-    /// Muted text color - for less important info
-    pub const TEXT_MUTED: Color = Color::Rgb(90, 90, 110);
+    /// Muted text color
+    fn text_muted(&self) -> Color;
 
     // ==================== Semantic Colors ====================
 
     /// Success color
-    pub const SUCCESS: Color = Self::NEON_GREEN;
+    fn success(&self) -> Color {
+        self.neon_green()
+    }
 
     /// Error color
-    pub const ERROR: Color = Color::Rgb(255, 50, 80);
+    fn error(&self) -> Color;
 
     /// Warning color
-    pub const WARNING: Color = Self::NEON_YELLOW;
+    fn warning(&self) -> Color {
+        self.neon_yellow()
+    }
 
     /// Info color
-    pub const INFO: Color = Self::NEON_CYAN;
+    fn info(&self) -> Color {
+        self.neon_cyan()
+    }
 
     // ==================== Agent Status Colors ====================
 
-    /// Running status - animated green glow
-    pub const STATUS_RUNNING: Color = Self::NEON_GREEN;
+    /// Running status color
+    fn status_running(&self) -> Color {
+        self.neon_green()
+    }
 
-    /// Idle status - waiting yellow
-    pub const STATUS_IDLE: Color = Self::NEON_YELLOW;
+    /// Idle status color
+    fn status_idle(&self) -> Color {
+        self.neon_yellow()
+    }
 
-    /// Ended status - muted purple
-    pub const STATUS_ENDED: Color = Color::Rgb(100, 80, 120);
+    /// Ended status color
+    fn status_ended(&self) -> Color;
 
-    /// Error status - alarm red
-    pub const STATUS_ERROR: Color = Self::ERROR;
+    /// Error status color
+    fn status_error(&self) -> Color {
+        self.error()
+    }
 
     // ==================== Border Colors ====================
 
-    /// Primary border - cyan glow
-    pub const BORDER_PRIMARY: Color = Self::NEON_CYAN;
+    /// Primary border color
+    fn border_primary(&self) -> Color {
+        self.neon_cyan()
+    }
 
-    /// Secondary border - muted
-    pub const BORDER_SECONDARY: Color = Color::Rgb(60, 60, 90);
+    /// Secondary border color
+    fn border_secondary(&self) -> Color;
 
-    /// Active/focused border
-    pub const BORDER_ACTIVE: Color = Self::NEON_PINK;
+    /// Active/focused border color
+    fn border_active(&self) -> Color {
+        self.neon_pink()
+    }
+
+    // ==================== Diff Colors ====================
+
+    /// Addition background color
+    fn diff_add_bg(&self) -> Color;
+
+    /// Deletion background color
+    fn diff_del_bg(&self) -> Color;
+
+    /// Addition text color
+    fn diff_addition(&self) -> Color {
+        self.neon_green()
+    }
+
+    /// Deletion text color
+    fn diff_deletion(&self) -> Color {
+        self.error()
+    }
+
+    /// Context line color
+    fn diff_context(&self) -> Color {
+        self.text_primary()
+    }
+
+    /// Hunk header color
+    fn diff_hunk_header(&self) -> Color {
+        self.neon_cyan()
+    }
+
+    /// File header color
+    fn diff_file_header(&self) -> Color {
+        self.neon_yellow()
+    }
 
     // ==================== UI Element Colors ====================
 
-    /// Header tab active background
-    pub const TAB_ACTIVE_BG: Color = Self::NEON_CYAN;
+    /// Active tab background
+    fn tab_active_bg(&self) -> Color {
+        self.neon_cyan()
+    }
 
-    /// Header tab active foreground
-    pub const TAB_ACTIVE_FG: Color = Color::Rgb(0, 0, 0);
-
-    /// Header tab inactive background
-    pub const TAB_INACTIVE_BG: Color = Self::BG_SURFACE;
-
-    /// Header tab inactive foreground
-    pub const TAB_INACTIVE_FG: Color = Self::TEXT_SECONDARY;
+    /// Active tab foreground
+    fn tab_active_fg(&self) -> Color {
+        Color::Rgb(0, 0, 0)
+    }
 
     /// Selected item background
-    pub const SELECTED_BG: Color = Self::BG_HIGHLIGHT;
+    fn selected_bg(&self) -> Color {
+        self.bg_highlight()
+    }
 
-    /// Cursor color
-    pub const CURSOR_BG: Color = Self::NEON_CYAN;
-    pub const CURSOR_FG: Color = Color::Rgb(0, 0, 0);
+    /// Cursor background
+    fn cursor_bg(&self) -> Color {
+        self.neon_cyan()
+    }
 
-    // ==================== Help Text Colors ====================
+    /// Cursor foreground
+    fn cursor_fg(&self) -> Color {
+        Color::Rgb(0, 0, 0)
+    }
 
     /// Key binding color
-    pub const KEY_BINDING: Color = Self::NEON_CYAN;
+    fn key_binding(&self) -> Color {
+        self.neon_cyan()
+    }
 
     /// Key description color
-    pub const KEY_DESCRIPTION: Color = Self::TEXT_MUTED;
-
-    // ==================== Diff Line Type Colors ====================
-
-    /// Context line - unchanged
-    pub const DIFF_CONTEXT: Color = Self::TEXT_PRIMARY;
-
-    /// Addition line
-    pub const DIFF_ADDITION: Color = Self::NEON_GREEN;
-
-    /// Deletion line
-    pub const DIFF_DELETION: Color = Self::ERROR;
-
-    /// Hunk header
-    pub const DIFF_HUNK_HEADER: Color = Self::NEON_CYAN;
-
-    /// File header
-    pub const DIFF_FILE_HEADER: Color = Self::NEON_YELLOW;
-
-    // ==================== Issue Picker Colors ====================
+    fn key_description(&self) -> Color {
+        self.text_muted()
+    }
 
     /// Issue number color
-    pub const ISSUE_NUMBER: Color = Self::NEON_YELLOW;
+    fn issue_number(&self) -> Color {
+        self.neon_yellow()
+    }
 
     /// Issue label color
-    pub const ISSUE_LABEL: Color = Self::NEON_PURPLE;
+    fn issue_label(&self) -> Color {
+        self.neon_purple()
+    }
 
-    // ==================== Style Constructors ====================
+    // ==================== Style Methods ====================
 
-    /// Create style for active tab
-    pub fn style_tab_active() -> Style {
+    /// Style for active tab
+    fn style_tab_active(&self) -> Style {
         Style::default()
-            .fg(Self::TAB_ACTIVE_FG)
-            .bg(Self::TAB_ACTIVE_BG)
+            .fg(self.tab_active_fg())
+            .bg(self.tab_active_bg())
             .add_modifier(Modifier::BOLD)
     }
 
-    /// Create style for inactive tab
-    pub fn style_tab_inactive() -> Style {
+    /// Style for inactive tab
+    fn style_tab_inactive(&self) -> Style {
         Style::default()
-            .fg(Self::TAB_INACTIVE_FG)
-            .bg(Self::TAB_INACTIVE_BG)
+            .fg(self.text_secondary())
+            .bg(self.bg_surface())
     }
 
-    /// Create style for primary border
-    pub fn style_border() -> Style {
-        Style::default().fg(Self::BORDER_PRIMARY)
+    /// Style for primary border
+    fn style_border(&self) -> Style {
+        Style::default().fg(self.border_primary())
     }
 
-    /// Create style for secondary (muted) border
-    pub fn style_border_muted() -> Style {
-        Style::default().fg(Self::BORDER_SECONDARY)
+    /// Style for secondary (muted) border
+    fn style_border_muted(&self) -> Style {
+        Style::default().fg(self.border_secondary())
     }
 
-    /// Create style for dialog border
-    pub fn style_dialog_border() -> Style {
-        Style::default().fg(Self::NEON_CYAN)
+    /// Style for dialog border
+    fn style_dialog_border(&self) -> Style {
+        Style::default().fg(self.neon_cyan())
     }
 
-    /// Create style for success text
-    pub fn style_success() -> Style {
+    /// Style for success text
+    fn style_success(&self) -> Style {
         Style::default()
-            .fg(Self::SUCCESS)
+            .fg(self.success())
             .add_modifier(Modifier::BOLD)
     }
 
-    /// Create style for error text
-    pub fn style_error() -> Style {
-        Style::default().fg(Self::ERROR).add_modifier(Modifier::BOLD)
-    }
-
-    /// Create style for warning text
-    pub fn style_warning() -> Style {
-        Style::default().fg(Self::WARNING)
-    }
-
-    /// Create style for info text
-    pub fn style_info() -> Style {
-        Style::default().fg(Self::INFO)
-    }
-
-    /// Create style for primary text
-    pub fn style_text() -> Style {
-        Style::default().fg(Self::TEXT_PRIMARY)
-    }
-
-    /// Create style for secondary text
-    pub fn style_text_secondary() -> Style {
-        Style::default().fg(Self::TEXT_SECONDARY)
-    }
-
-    /// Create style for muted text
-    pub fn style_text_muted() -> Style {
-        Style::default().fg(Self::TEXT_MUTED)
-    }
-
-    /// Create style for key bindings
-    pub fn style_key() -> Style {
+    /// Style for error text
+    fn style_error(&self) -> Style {
         Style::default()
-            .fg(Self::KEY_BINDING)
+            .fg(self.error())
             .add_modifier(Modifier::BOLD)
     }
 
-    /// Create style for key descriptions
-    pub fn style_key_desc() -> Style {
-        Style::default().fg(Self::KEY_DESCRIPTION)
+    /// Style for warning text
+    fn style_warning(&self) -> Style {
+        Style::default().fg(self.warning())
     }
 
-    /// Create style for selected/highlighted items
-    pub fn style_selected() -> Style {
+    /// Style for info text
+    fn style_info(&self) -> Style {
+        Style::default().fg(self.info())
+    }
+
+    /// Style for primary text
+    fn style_text(&self) -> Style {
+        Style::default().fg(self.text_primary())
+    }
+
+    /// Style for secondary text
+    fn style_text_secondary(&self) -> Style {
+        Style::default().fg(self.text_secondary())
+    }
+
+    /// Style for muted text
+    fn style_text_muted(&self) -> Style {
+        Style::default().fg(self.text_muted())
+    }
+
+    /// Style for key bindings
+    fn style_key(&self) -> Style {
         Style::default()
-            .bg(Self::SELECTED_BG)
+            .fg(self.key_binding())
             .add_modifier(Modifier::BOLD)
     }
 
-    /// Create style for cursor
-    pub fn style_cursor() -> Style {
-        Style::default().fg(Self::CURSOR_FG).bg(Self::CURSOR_BG)
+    /// Style for key descriptions
+    fn style_key_desc(&self) -> Style {
+        Style::default().fg(self.key_description())
     }
 
-    /// Create style for input text
-    pub fn style_input() -> Style {
-        Style::default().fg(Self::NEON_YELLOW)
+    /// Style for selected/highlighted items
+    fn style_selected(&self) -> Style {
+        Style::default()
+            .bg(self.selected_bg())
+            .add_modifier(Modifier::BOLD)
     }
 
-    /// Create style for loading indicator
-    pub fn style_loading() -> Style {
-        Style::default().fg(Self::NEON_YELLOW)
+    /// Style for cursor
+    fn style_cursor(&self) -> Style {
+        Style::default()
+            .fg(self.cursor_fg())
+            .bg(self.cursor_bg())
     }
 
-    /// Create style for dialog background
-    pub fn style_dialog_bg() -> Style {
-        Style::default().bg(Self::BG_DARK)
+    /// Style for input text
+    fn style_input(&self) -> Style {
+        Style::default().fg(self.neon_yellow())
+    }
+
+    /// Style for loading indicator
+    fn style_loading(&self) -> Style {
+        Style::default().fg(self.neon_yellow())
+    }
+
+    /// Style for dialog background
+    fn style_dialog_bg(&self) -> Style {
+        Style::default().bg(self.bg_dark())
     }
 }
 
-/// Helper type alias for commonly used theme
+// ==================== Global Theme Access ====================
+
+static CURRENT_THEME: OnceLock<Box<dyn ColorTheme>> = OnceLock::new();
+
+/// Get the current theme
+///
+/// Returns the globally set theme, or CyberpunkTheme if none is set.
+pub fn theme() -> &'static dyn ColorTheme {
+    CURRENT_THEME
+        .get()
+        .map(|t| t.as_ref())
+        .unwrap_or(&CyberpunkTheme)
+}
+
+/// Set the global theme
+///
+/// This can only be called once. Subsequent calls will be ignored.
+/// Returns true if the theme was set, false if it was already set.
+pub fn set_theme(theme_impl: Box<dyn ColorTheme>) -> bool {
+    CURRENT_THEME.set(theme_impl).is_ok()
+}
+
+/// Create a theme from its name
+pub fn create_theme(name: &str) -> Box<dyn ColorTheme> {
+    match name.to_lowercase().as_str() {
+        "monokai" => Box::new(MonokaiTheme),
+        "dracula" => Box::new(DraculaTheme),
+        "nord" => Box::new(NordTheme),
+        "minimal" => Box::new(MinimalTheme),
+        _ => Box::new(CyberpunkTheme),
+    }
+}
+
+// ==================== Cyberpunk Theme ====================
+
+/// Cyberpunk color palette
+///
+/// A neon-infused color palette inspired by cyberpunk aesthetics.
+pub struct CyberpunkTheme;
+
+impl ColorTheme for CyberpunkTheme {
+    fn neon_pink(&self) -> Color {
+        Color::Rgb(255, 0, 128)
+    }
+
+    fn neon_cyan(&self) -> Color {
+        Color::Rgb(0, 255, 255)
+    }
+
+    fn neon_purple(&self) -> Color {
+        Color::Rgb(157, 78, 221)
+    }
+
+    fn neon_green(&self) -> Color {
+        Color::Rgb(57, 255, 20)
+    }
+
+    fn neon_yellow(&self) -> Color {
+        Color::Rgb(255, 255, 0)
+    }
+
+    fn neon_orange(&self) -> Color {
+        Color::Rgb(255, 165, 0)
+    }
+
+    fn neon_blue(&self) -> Color {
+        Color::Rgb(0, 191, 255)
+    }
+
+    fn bg_dark(&self) -> Color {
+        Color::Rgb(13, 13, 26)
+    }
+
+    fn bg_panel(&self) -> Color {
+        Color::Rgb(26, 26, 46)
+    }
+
+    fn bg_surface(&self) -> Color {
+        Color::Rgb(35, 35, 60)
+    }
+
+    fn bg_highlight(&self) -> Color {
+        Color::Rgb(50, 50, 80)
+    }
+
+    fn text_primary(&self) -> Color {
+        Color::Rgb(230, 230, 240)
+    }
+
+    fn text_secondary(&self) -> Color {
+        Color::Rgb(140, 140, 160)
+    }
+
+    fn text_muted(&self) -> Color {
+        Color::Rgb(90, 90, 110)
+    }
+
+    fn error(&self) -> Color {
+        Color::Rgb(255, 50, 80)
+    }
+
+    fn status_ended(&self) -> Color {
+        Color::Rgb(100, 80, 120)
+    }
+
+    fn border_secondary(&self) -> Color {
+        Color::Rgb(60, 60, 90)
+    }
+
+    fn diff_add_bg(&self) -> Color {
+        Color::Rgb(0, 50, 20)
+    }
+
+    fn diff_del_bg(&self) -> Color {
+        Color::Rgb(50, 0, 20)
+    }
+}
+
+// ==================== Monokai Theme ====================
+
+/// Monokai color palette
+///
+/// Classic Monokai colors used in many editors.
+pub struct MonokaiTheme;
+
+impl ColorTheme for MonokaiTheme {
+    fn neon_pink(&self) -> Color {
+        Color::Rgb(249, 38, 114) // #F92672
+    }
+
+    fn neon_cyan(&self) -> Color {
+        Color::Rgb(102, 217, 239) // #66D9EF
+    }
+
+    fn neon_purple(&self) -> Color {
+        Color::Rgb(174, 129, 255) // #AE81FF
+    }
+
+    fn neon_green(&self) -> Color {
+        Color::Rgb(166, 226, 46) // #A6E22E
+    }
+
+    fn neon_yellow(&self) -> Color {
+        Color::Rgb(230, 219, 116) // #E6DB74
+    }
+
+    fn neon_orange(&self) -> Color {
+        Color::Rgb(253, 151, 31) // #FD971F
+    }
+
+    fn neon_blue(&self) -> Color {
+        Color::Rgb(102, 217, 239) // #66D9EF (same as cyan)
+    }
+
+    fn bg_dark(&self) -> Color {
+        Color::Rgb(39, 40, 34) // #272822
+    }
+
+    fn bg_panel(&self) -> Color {
+        Color::Rgb(49, 50, 44) // slightly lighter
+    }
+
+    fn bg_surface(&self) -> Color {
+        Color::Rgb(59, 60, 54) // more elevated
+    }
+
+    fn bg_highlight(&self) -> Color {
+        Color::Rgb(73, 72, 62) // #49483E
+    }
+
+    fn text_primary(&self) -> Color {
+        Color::Rgb(248, 248, 242) // #F8F8F2
+    }
+
+    fn text_secondary(&self) -> Color {
+        Color::Rgb(175, 175, 165)
+    }
+
+    fn text_muted(&self) -> Color {
+        Color::Rgb(117, 113, 94) // #75715E
+    }
+
+    fn error(&self) -> Color {
+        Color::Rgb(249, 38, 114) // #F92672 (pink in Monokai)
+    }
+
+    fn status_ended(&self) -> Color {
+        Color::Rgb(117, 113, 94) // muted
+    }
+
+    fn border_secondary(&self) -> Color {
+        Color::Rgb(73, 72, 62) // #49483E
+    }
+
+    fn diff_add_bg(&self) -> Color {
+        Color::Rgb(30, 50, 20)
+    }
+
+    fn diff_del_bg(&self) -> Color {
+        Color::Rgb(50, 20, 30)
+    }
+}
+
+// ==================== Dracula Theme ====================
+
+/// Dracula color palette
+///
+/// The popular Dracula theme colors.
+pub struct DraculaTheme;
+
+impl ColorTheme for DraculaTheme {
+    fn neon_pink(&self) -> Color {
+        Color::Rgb(255, 121, 198) // #FF79C6
+    }
+
+    fn neon_cyan(&self) -> Color {
+        Color::Rgb(139, 233, 253) // #8BE9FD
+    }
+
+    fn neon_purple(&self) -> Color {
+        Color::Rgb(189, 147, 249) // #BD93F9
+    }
+
+    fn neon_green(&self) -> Color {
+        Color::Rgb(80, 250, 123) // #50FA7B
+    }
+
+    fn neon_yellow(&self) -> Color {
+        Color::Rgb(241, 250, 140) // #F1FA8C
+    }
+
+    fn neon_orange(&self) -> Color {
+        Color::Rgb(255, 184, 108) // #FFB86C
+    }
+
+    fn neon_blue(&self) -> Color {
+        Color::Rgb(139, 233, 253) // #8BE9FD (same as cyan)
+    }
+
+    fn bg_dark(&self) -> Color {
+        Color::Rgb(40, 42, 54) // #282A36
+    }
+
+    fn bg_panel(&self) -> Color {
+        Color::Rgb(50, 52, 64)
+    }
+
+    fn bg_surface(&self) -> Color {
+        Color::Rgb(68, 71, 90) // #44475A
+    }
+
+    fn bg_highlight(&self) -> Color {
+        Color::Rgb(68, 71, 90) // #44475A
+    }
+
+    fn text_primary(&self) -> Color {
+        Color::Rgb(248, 248, 242) // #F8F8F2
+    }
+
+    fn text_secondary(&self) -> Color {
+        Color::Rgb(200, 200, 200)
+    }
+
+    fn text_muted(&self) -> Color {
+        Color::Rgb(98, 114, 164) // #6272A4
+    }
+
+    fn error(&self) -> Color {
+        Color::Rgb(255, 85, 85) // #FF5555
+    }
+
+    fn status_ended(&self) -> Color {
+        Color::Rgb(98, 114, 164) // #6272A4
+    }
+
+    fn border_secondary(&self) -> Color {
+        Color::Rgb(68, 71, 90) // #44475A
+    }
+
+    fn diff_add_bg(&self) -> Color {
+        Color::Rgb(30, 60, 40)
+    }
+
+    fn diff_del_bg(&self) -> Color {
+        Color::Rgb(60, 30, 30)
+    }
+}
+
+// ==================== Nord Theme ====================
+
+/// Nord color palette
+///
+/// The Arctic, north-bluish color palette.
+pub struct NordTheme;
+
+impl ColorTheme for NordTheme {
+    fn neon_pink(&self) -> Color {
+        Color::Rgb(180, 142, 173) // #B48EAD (Nord Aurora purple-pink)
+    }
+
+    fn neon_cyan(&self) -> Color {
+        Color::Rgb(136, 192, 208) // #88C0D0 (Nord Frost)
+    }
+
+    fn neon_purple(&self) -> Color {
+        Color::Rgb(180, 142, 173) // #B48EAD
+    }
+
+    fn neon_green(&self) -> Color {
+        Color::Rgb(163, 190, 140) // #A3BE8C
+    }
+
+    fn neon_yellow(&self) -> Color {
+        Color::Rgb(235, 203, 139) // #EBCB8B
+    }
+
+    fn neon_orange(&self) -> Color {
+        Color::Rgb(208, 135, 112) // #D08770
+    }
+
+    fn neon_blue(&self) -> Color {
+        Color::Rgb(94, 129, 172) // #5E81AC
+    }
+
+    fn bg_dark(&self) -> Color {
+        Color::Rgb(46, 52, 64) // #2E3440 (Nord Polar Night)
+    }
+
+    fn bg_panel(&self) -> Color {
+        Color::Rgb(59, 66, 82) // #3B4252
+    }
+
+    fn bg_surface(&self) -> Color {
+        Color::Rgb(67, 76, 94) // #434C5E
+    }
+
+    fn bg_highlight(&self) -> Color {
+        Color::Rgb(76, 86, 106) // #4C566A
+    }
+
+    fn text_primary(&self) -> Color {
+        Color::Rgb(236, 239, 244) // #ECEFF4 (Nord Snow Storm)
+    }
+
+    fn text_secondary(&self) -> Color {
+        Color::Rgb(216, 222, 233) // #D8DEE9
+    }
+
+    fn text_muted(&self) -> Color {
+        Color::Rgb(129, 161, 193) // #81A1C1
+    }
+
+    fn error(&self) -> Color {
+        Color::Rgb(191, 97, 106) // #BF616A (Nord Aurora red)
+    }
+
+    fn status_ended(&self) -> Color {
+        Color::Rgb(76, 86, 106) // #4C566A
+    }
+
+    fn border_secondary(&self) -> Color {
+        Color::Rgb(67, 76, 94) // #434C5E
+    }
+
+    fn diff_add_bg(&self) -> Color {
+        Color::Rgb(40, 55, 45)
+    }
+
+    fn diff_del_bg(&self) -> Color {
+        Color::Rgb(55, 40, 45)
+    }
+
+    fn border_primary(&self) -> Color {
+        Color::Rgb(129, 161, 193) // #81A1C1 (softer than cyan)
+    }
+
+    fn tab_active_bg(&self) -> Color {
+        Color::Rgb(136, 192, 208) // #88C0D0
+    }
+}
+
+// ==================== Minimal Theme ====================
+
+/// Minimal color palette
+///
+/// A subdued, professional color scheme with dark gray background.
+pub struct MinimalTheme;
+
+impl ColorTheme for MinimalTheme {
+    fn neon_pink(&self) -> Color {
+        Color::Rgb(200, 120, 150) // Muted pink
+    }
+
+    fn neon_cyan(&self) -> Color {
+        Color::Rgb(74, 158, 255) // #4A9EFF - Calm blue
+    }
+
+    fn neon_purple(&self) -> Color {
+        Color::Rgb(150, 130, 180)
+    }
+
+    fn neon_green(&self) -> Color {
+        Color::Rgb(76, 175, 80) // #4CAF50 - Material green
+    }
+
+    fn neon_yellow(&self) -> Color {
+        Color::Rgb(255, 152, 0) // #FF9800 - Material orange (less harsh than yellow)
+    }
+
+    fn neon_orange(&self) -> Color {
+        Color::Rgb(255, 152, 0) // #FF9800
+    }
+
+    fn neon_blue(&self) -> Color {
+        Color::Rgb(74, 158, 255) // #4A9EFF
+    }
+
+    fn bg_dark(&self) -> Color {
+        Color::Rgb(26, 26, 26) // #1A1A1A
+    }
+
+    fn bg_panel(&self) -> Color {
+        Color::Rgb(35, 35, 35) // #232323
+    }
+
+    fn bg_surface(&self) -> Color {
+        Color::Rgb(45, 45, 45) // #2D2D2D
+    }
+
+    fn bg_highlight(&self) -> Color {
+        Color::Rgb(55, 55, 55) // #373737
+    }
+
+    fn text_primary(&self) -> Color {
+        Color::Rgb(224, 224, 224) // #E0E0E0
+    }
+
+    fn text_secondary(&self) -> Color {
+        Color::Rgb(158, 158, 158) // #9E9E9E
+    }
+
+    fn text_muted(&self) -> Color {
+        Color::Rgb(97, 97, 97) // #616161
+    }
+
+    fn error(&self) -> Color {
+        Color::Rgb(244, 67, 54) // #F44336 - Material red
+    }
+
+    fn status_ended(&self) -> Color {
+        Color::Rgb(97, 97, 97) // #616161
+    }
+
+    fn border_secondary(&self) -> Color {
+        Color::Rgb(66, 66, 66) // #424242
+    }
+
+    fn diff_add_bg(&self) -> Color {
+        Color::Rgb(25, 45, 30)
+    }
+
+    fn diff_del_bg(&self) -> Color {
+        Color::Rgb(50, 25, 25)
+    }
+
+    fn border_primary(&self) -> Color {
+        Color::Rgb(74, 158, 255) // Match accent blue
+    }
+
+    fn warning(&self) -> Color {
+        Color::Rgb(255, 152, 0) // #FF9800
+    }
+
+    fn tab_active_bg(&self) -> Color {
+        Color::Rgb(74, 158, 255) // #4A9EFF
+    }
+}
+
+// ==================== Legacy Type Alias ====================
+
+/// Helper type alias for backward compatibility
+///
+/// Use `theme()` function instead for dynamic theme access.
+#[deprecated(since = "0.2.0", note = "Use theme() function for dynamic theme access")]
 pub type Theme = CyberpunkTheme;
 
 #[cfg(test)]
@@ -277,63 +797,110 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_neon_colors_are_rgb() {
-        // Verify key colors are properly defined as RGB
-        assert!(matches!(Theme::NEON_PINK, Color::Rgb(255, 0, 128)));
-        assert!(matches!(Theme::NEON_CYAN, Color::Rgb(0, 255, 255)));
-        assert!(matches!(Theme::NEON_GREEN, Color::Rgb(57, 255, 20)));
+    fn test_cyberpunk_theme_colors() {
+        let theme = CyberpunkTheme;
+        assert!(matches!(theme.neon_pink(), Color::Rgb(255, 0, 128)));
+        assert!(matches!(theme.neon_cyan(), Color::Rgb(0, 255, 255)));
+        assert!(matches!(theme.neon_green(), Color::Rgb(57, 255, 20)));
+    }
+
+    #[test]
+    fn test_monokai_theme_colors() {
+        let theme = MonokaiTheme;
+        assert!(matches!(theme.neon_pink(), Color::Rgb(249, 38, 114)));
+        assert!(matches!(theme.neon_green(), Color::Rgb(166, 226, 46)));
+        assert!(matches!(theme.bg_dark(), Color::Rgb(39, 40, 34)));
+    }
+
+    #[test]
+    fn test_dracula_theme_colors() {
+        let theme = DraculaTheme;
+        assert!(matches!(theme.neon_pink(), Color::Rgb(255, 121, 198)));
+        assert!(matches!(theme.neon_green(), Color::Rgb(80, 250, 123)));
+        assert!(matches!(theme.bg_dark(), Color::Rgb(40, 42, 54)));
+    }
+
+    #[test]
+    fn test_nord_theme_colors() {
+        let theme = NordTheme;
+        assert!(matches!(theme.neon_cyan(), Color::Rgb(136, 192, 208)));
+        assert!(matches!(theme.neon_green(), Color::Rgb(163, 190, 140)));
+        assert!(matches!(theme.bg_dark(), Color::Rgb(46, 52, 64)));
+    }
+
+    #[test]
+    fn test_minimal_theme_colors() {
+        let theme = MinimalTheme;
+        assert!(matches!(theme.neon_cyan(), Color::Rgb(74, 158, 255)));
+        assert!(matches!(theme.neon_green(), Color::Rgb(76, 175, 80)));
+        assert!(matches!(theme.bg_dark(), Color::Rgb(26, 26, 26)));
     }
 
     #[test]
     fn test_style_constructors() {
+        let theme = CyberpunkTheme;
         // Ensure style constructors don't panic
-        let _ = Theme::style_tab_active();
-        let _ = Theme::style_tab_inactive();
-        let _ = Theme::style_border();
-        let _ = Theme::style_success();
-        let _ = Theme::style_error();
-        let _ = Theme::style_warning();
-        let _ = Theme::style_info();
-        let _ = Theme::style_text();
-        let _ = Theme::style_key();
-        let _ = Theme::style_selected();
+        let _ = theme.style_tab_active();
+        let _ = theme.style_tab_inactive();
+        let _ = theme.style_border();
+        let _ = theme.style_success();
+        let _ = theme.style_error();
+        let _ = theme.style_warning();
+        let _ = theme.style_info();
+        let _ = theme.style_text();
+        let _ = theme.style_key();
+        let _ = theme.style_selected();
     }
 
     #[test]
-    fn test_semantic_colors() {
-        // Success should be green
-        assert!(matches!(Theme::SUCCESS, Color::Rgb(57, 255, 20)));
+    fn test_semantic_color_defaults() {
+        let theme = CyberpunkTheme;
+        // Test default implementations
+        assert_eq!(theme.success(), theme.neon_green());
+        assert_eq!(theme.warning(), theme.neon_yellow());
+        assert_eq!(theme.info(), theme.neon_cyan());
+        assert_eq!(theme.status_running(), theme.neon_green());
+        assert_eq!(theme.status_idle(), theme.neon_yellow());
+        assert_eq!(theme.status_error(), theme.error());
+    }
 
-        // Error should be red-ish
-        assert!(matches!(Theme::ERROR, Color::Rgb(255, 50, 80)));
+    #[test]
+    fn test_create_theme() {
+        let cyberpunk = create_theme("cyberpunk");
+        assert!(matches!(cyberpunk.neon_pink(), Color::Rgb(255, 0, 128)));
 
-        // Warning should be yellow
-        assert!(matches!(Theme::WARNING, Color::Rgb(255, 255, 0)));
+        let monokai = create_theme("monokai");
+        assert!(matches!(monokai.neon_pink(), Color::Rgb(249, 38, 114)));
 
-        // Info should be cyan
-        assert!(matches!(Theme::INFO, Color::Rgb(0, 255, 255)));
+        let dracula = create_theme("Dracula"); // Test case insensitivity
+        assert!(matches!(dracula.neon_pink(), Color::Rgb(255, 121, 198)));
+
+        let nord = create_theme("NORD");
+        assert!(matches!(nord.bg_dark(), Color::Rgb(46, 52, 64)));
+
+        let minimal = create_theme("minimal");
+        assert!(matches!(minimal.bg_dark(), Color::Rgb(26, 26, 26)));
+
+        // Unknown theme defaults to Cyberpunk
+        let unknown = create_theme("unknown");
+        assert!(matches!(unknown.neon_pink(), Color::Rgb(255, 0, 128)));
     }
 
     #[test]
     fn test_diff_colors() {
-        // Addition should be green
-        assert!(matches!(Theme::DIFF_ADDITION, Color::Rgb(57, 255, 20)));
-
-        // Deletion should be red-ish
-        assert!(matches!(Theme::DIFF_DELETION, Color::Rgb(255, 50, 80)));
-
-        // Hunk header should be cyan
-        assert!(matches!(Theme::DIFF_HUNK_HEADER, Color::Rgb(0, 255, 255)));
-
-        // File header should be yellow
-        assert!(matches!(Theme::DIFF_FILE_HEADER, Color::Rgb(255, 255, 0)));
+        let theme = CyberpunkTheme;
+        assert_eq!(theme.diff_addition(), theme.neon_green());
+        assert_eq!(theme.diff_deletion(), theme.error());
+        assert_eq!(theme.diff_hunk_header(), theme.neon_cyan());
+        assert_eq!(theme.diff_file_header(), theme.neon_yellow());
     }
 
     #[test]
     fn test_status_colors() {
-        assert!(matches!(Theme::STATUS_RUNNING, Color::Rgb(57, 255, 20)));
-        assert!(matches!(Theme::STATUS_IDLE, Color::Rgb(255, 255, 0)));
-        assert!(matches!(Theme::STATUS_ENDED, Color::Rgb(100, 80, 120)));
-        assert!(matches!(Theme::STATUS_ERROR, Color::Rgb(255, 50, 80)));
+        let theme = CyberpunkTheme;
+        assert_eq!(theme.status_running(), theme.neon_green());
+        assert_eq!(theme.status_idle(), theme.neon_yellow());
+        assert!(matches!(theme.status_ended(), Color::Rgb(100, 80, 120)));
+        assert_eq!(theme.status_error(), theme.error());
     }
 }
