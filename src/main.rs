@@ -1030,10 +1030,16 @@ impl App {
 
         // Create agent in non-interactive mode
         let name = branch.to_string();
+        let full_prompt = format!(
+            "{}\n\n\
+            重要: 作業完了後は必ず git add と git commit を実行してコミットしてください。\n\
+            コミットせずに終了すると変更が失われます。",
+            task_description
+        );
         match self.agent_manager.add_non_interactive(
             name.clone(),
             working_dir,
-            task_description,
+            &full_prompt,
             None, // No turn limit for plan-based workers
         ) {
             Ok(_) => {
