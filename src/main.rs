@@ -864,39 +864,58 @@ impl App {
 
     /// Check if any agent completed its task and update plan
     fn check_agent_task_completions(&mut self) {
-        // Collect completed task info (task_id, agent_index)
-        let completed: Vec<(String, usize)> = self
+        // Collect ended agents with their task info
+        let ended: Vec<(String, usize, Option<String>)> = self
             .task_agents
             .iter()
             .filter_map(|(task_id, &agent_index)| {
                 self.agent_manager
                     .get(agent_index)
                     .filter(|a| a.status == AgentStatus::Ended)
-                    .map(|_| (task_id.clone(), agent_index))
+                    .map(|a| (task_id.clone(), agent_index, a.error.clone()))
             })
             .collect();
 
-        // Mark tasks as completed with results
-        for (task_id, agent_index) in completed {
-            // Get commits from worktree
-            let commits = if agent_index < self.agent_worktrees.len() {
-                if let Some(ref worktree_path) = self.agent_worktrees[agent_index] {
-                    get_worker_commits(worktree_path)
-                } else {
-                    Vec::new()
+        // Process ended agents
+        for (task_id, agent_index, error) in ended {
+            if let Some(error_msg) = error {
+                // Agent ended with error - mark task as failed
+                self.add_notification(
+                    format!("Worker failed: {}", error_msg),
+                    cctakt::plan::NotifyLevel::Error,
+                );
+                if let Some(ref mut plan) = self.current_plan {
+                    plan.mark_failed(&task_id, &error_msg);
                 }
             } else {
-                Vec::new()
-            };
+                // Agent ended successfully - get commits and mark completed
+                let commits = if agent_index < self.agent_worktrees.len() {
+                    if let Some(ref worktree_path) = self.agent_worktrees[agent_index] {
+                        get_worker_commits(worktree_path)
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                };
 
-            let result = TaskResult {
-                commits,
-                pr_number: None,
-                pr_url: None,
-            };
+                // Warn if no commits
+                if commits.is_empty() {
+                    self.add_notification(
+                        format!("Worker {} completed with no commits", task_id),
+                        cctakt::plan::NotifyLevel::Warning,
+                    );
+                }
 
-            if let Some(ref mut plan) = self.current_plan {
-                plan.mark_completed(&task_id, result);
+                let result = TaskResult {
+                    commits,
+                    pr_number: None,
+                    pr_url: None,
+                };
+
+                if let Some(ref mut plan) = self.current_plan {
+                    plan.mark_completed(&task_id, result);
+                }
             }
             self.task_agents.remove(&task_id);
         }
