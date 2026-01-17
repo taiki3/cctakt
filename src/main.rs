@@ -3,8 +3,8 @@ mod agent;
 use agent::{AgentManager, AgentStatus};
 use anyhow::{Context, Result};
 use cctakt::{
-    issue_picker::centered_rect, suggest_branch_name, Config, DiffView, GitHubClient, Issue,
-    IssuePicker, IssuePickerResult, MergeManager, Plan, PlanManager, TaskAction, TaskResult,
+    issue_picker::centered_rect, render_task, suggest_branch_name, Config, DiffView, GitHubClient,
+    Issue, IssuePicker, IssuePickerResult, MergeManager, Plan, PlanManager, TaskAction, TaskResult,
     TaskStatus, WorktreeManager,
 };
 use clap::{Parser, Subcommand};
@@ -51,6 +51,15 @@ enum Commands {
     },
     /// Check environment setup status
     Status,
+    /// List GitHub issues
+    Issues {
+        /// Filter by labels (comma-separated)
+        #[arg(short, long)]
+        labels: Option<String>,
+        /// Issue state: open, closed, all
+        #[arg(short, long, default_value = "open")]
+        state: String,
+    },
 }
 
 /// Application mode
@@ -121,6 +130,10 @@ struct App {
     task_agents: std::collections::HashMap<String, usize>,
     /// Notifications to display
     notifications: Vec<Notification>,
+    /// Pending prompt to send to agent after it initializes
+    pending_agent_prompt: Option<String>,
+    /// Frame counter for delayed prompt sending
+    prompt_delay_frames: u32,
 }
 
 impl App {
@@ -152,6 +165,8 @@ impl App {
             current_plan: None,
             task_agents: std::collections::HashMap::new(),
             notifications: Vec::new(),
+            pending_agent_prompt: None,
+            prompt_delay_frames: 0,
         }
     }
 
@@ -166,7 +181,16 @@ impl App {
 
         if self.github_client.is_some() {
             self.mode = AppMode::IssuePicker;
+            self.add_notification(
+                "Opening issue picker...".to_string(),
+                cctakt::plan::NotifyLevel::Info,
+            );
             self.fetch_issues();
+        } else {
+            self.add_notification(
+                "GitHub repository not configured. Set 'repository' in cctakt.toml or add a git remote.".to_string(),
+                cctakt::plan::NotifyLevel::Warning,
+            );
         }
     }
 
@@ -185,10 +209,22 @@ impl App {
 
             match client.fetch_issues(&labels, "open") {
                 Ok(issues) => {
+                    let count = issues.len();
                     self.issue_picker.set_issues(issues);
+                    self.issue_picker.set_loading(false);
+                    if count == 0 {
+                        self.add_notification(
+                            "No open issues found in repository.".to_string(),
+                            cctakt::plan::NotifyLevel::Info,
+                        );
+                    }
                 }
                 Err(e) => {
                     self.issue_picker.set_error(Some(e.to_string()));
+                    self.add_notification(
+                        format!("Failed to fetch issues: {}", e),
+                        cctakt::plan::NotifyLevel::Error,
+                    );
                 }
             }
         }
@@ -214,9 +250,17 @@ impl App {
             )
         };
 
+        // Generate task prompt from issue
+        let task_prompt = render_task(&issue);
+
         let name = format!("#{}", issue.number);
         self.agent_manager
             .add(name, working_dir, self.content_rows, self.content_cols)?;
+
+        // Send the task prompt to the agent after a short delay to let it initialize
+        // We'll queue it to be sent on next update
+        self.pending_agent_prompt = Some(task_prompt);
+
         self.agent_issues.push(Some(issue));
         self.agent_worktrees.push(worktree_path);
 
@@ -255,6 +299,41 @@ impl App {
         }
         if index < self.agent_worktrees.len() {
             self.agent_worktrees.remove(index);
+        }
+    }
+
+    /// Check all agents for completion and auto-transition to review mode
+    fn check_agent_completion(&mut self) {
+        use std::time::Duration;
+
+        // Don't check if already in review mode
+        if self.mode == AppMode::ReviewMerge {
+            return;
+        }
+
+        let idle_threshold = Duration::from_secs(5); // 5 seconds idle = potentially done
+
+        // First pass: find agent that just completed
+        let mut completed_agent: Option<(usize, String)> = None;
+        for i in 0..self.agent_manager.list().len() {
+            if let Some(agent) = self.agent_manager.get_mut(i) {
+                if agent.update_work_state(idle_threshold) {
+                    completed_agent = Some((i, agent.name.clone()));
+                    break;
+                }
+            }
+        }
+
+        // Second pass: handle completion (separate borrow)
+        if let Some((index, name)) = completed_agent {
+            self.add_notification(
+                format!("Agent '{}' completed work. Starting review...", name),
+                cctakt::plan::NotifyLevel::Success,
+            );
+
+            // Auto-start review for this agent
+            self.agent_manager.switch_to(index);
+            self.start_review(index);
         }
     }
 
@@ -1081,6 +1160,27 @@ fn run_tui() -> Result<()> {
         // Draw
         terminal.draw(|f| ui(f, &mut app))?;
 
+        // Handle pending agent prompt (wait ~1 second for agent to initialize)
+        if app.pending_agent_prompt.is_some() {
+            app.prompt_delay_frames += 1;
+
+            // After 60 frames (~1 sec), send the task
+            if app.prompt_delay_frames > 60 {
+                if let Some(prompt) = app.pending_agent_prompt.take() {
+                    if let Some(agent) = app.agent_manager.active_mut() {
+                        agent.send_bytes(prompt.as_bytes());
+                        agent.send_bytes(b"\r");  // Carriage return for Enter
+                        agent.task_sent = true;
+                        agent.work_state = agent::WorkState::Working;
+                    }
+                }
+                app.prompt_delay_frames = 0;
+            }
+        }
+
+        // Check agent work states and auto-transition to review mode
+        app.check_agent_completion();
+
         // Poll events (16ms ≈ 60fps)
         if event::poll(Duration::from_millis(16))? {
             match event::read()? {
@@ -1160,7 +1260,13 @@ fn run_tui() -> Result<()> {
                                     KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
                                         app.should_quit = true;
                                     }
-                                    _ => {}
+                                    _ => {
+                                        // Debug: show what key was pressed
+                                        app.add_notification(
+                                            format!("Key pressed: {:?}", key.code),
+                                            cctakt::plan::NotifyLevel::Info,
+                                        );
+                                    }
                                 }
                             } else {
                                 // Handle keybindings
@@ -1264,8 +1370,8 @@ fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> b
             let _ = app.add_agent();
             true
         }
-        // Ctrl+I: Open issue picker
-        (KeyModifiers::CONTROL, KeyCode::Char('i')) => {
+        // Ctrl+I or F2: Open issue picker
+        (KeyModifiers::CONTROL, KeyCode::Char('i')) | (_, KeyCode::F(2)) => {
             app.open_issue_picker();
             true
         }
@@ -1570,7 +1676,7 @@ fn render_no_agent_menu(f: &mut Frame, area: ratatui::layout::Rect) {
             Span::raw(" New agent"),
         ]),
         Line::from(vec![
-            Span::styled("  [I]", Style::default().fg(Color::Cyan)),
+            Span::styled("  [I/F2]", Style::default().fg(Color::Cyan)),
             Span::raw(" New agent from GitHub issue"),
         ]),
         Line::from(vec![
@@ -1608,6 +1714,10 @@ fn render_ended_agent(f: &mut Frame, agent: &agent::Agent, area: ratatui::layout
         Line::from(vec![
             Span::styled("  [Ctrl+N/P]", Style::default().fg(Color::Blue)),
             Span::raw(" Switch to another tab"),
+        ]),
+        Line::from(vec![
+            Span::styled("  [F2]", Style::default().fg(Color::Cyan)),
+            Span::raw(" New agent from GitHub issue"),
         ]),
         Line::from(""),
     ])
@@ -1733,8 +1843,47 @@ fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Init { force }) => run_init(force),
         Some(Commands::Status) => run_status(),
+        Some(Commands::Issues { labels, state }) => run_issues(labels, state),
         None => run_tui(),
     }
+}
+
+/// List GitHub issues
+fn run_issues(labels: Option<String>, state: String) -> Result<()> {
+    let config = Config::load()?;
+
+    // Get repository from config or detect from git
+    let repo = config.github.repository.clone()
+        .or_else(detect_github_repo)
+        .ok_or_else(|| anyhow::anyhow!("No repository configured. Set 'repository' in cctakt.toml or add a git remote."))?;
+
+    let client = GitHubClient::new(&repo)?;
+
+    let label_vec: Vec<&str> = labels
+        .as_ref()
+        .map(|l| l.split(',').map(|s| s.trim()).collect())
+        .unwrap_or_default();
+
+    println!("Fetching issues from {}...\n", repo);
+
+    let issues = client.fetch_issues(&label_vec, &state)?;
+
+    if issues.is_empty() {
+        println!("No issues found.");
+        return Ok(());
+    }
+
+    for issue in &issues {
+        let labels_str = if issue.labels.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", issue.label_names())
+        };
+        println!("#{:<5} {}{}", issue.number, issue.title, labels_str);
+    }
+
+    println!("\nTotal: {} issues", issues.len());
+    Ok(())
 }
 
 #[cfg(test)]

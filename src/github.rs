@@ -124,12 +124,44 @@ pub trait HttpClient: Send + Sync {
 }
 
 /// Real HTTP client using ureq
-#[derive(Default)]
-pub struct UreqHttpClient;
+pub struct UreqHttpClient {
+    agent: ureq::Agent,
+}
+
+impl Default for UreqHttpClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UreqHttpClient {
+    /// Create a new HTTP client with proxy support from environment variables
+    pub fn new() -> Self {
+        use std::time::Duration;
+
+        let mut builder = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(10));
+
+        // Check for HTTPS_PROXY or HTTP_PROXY environment variable
+        if let Ok(proxy_url) = std::env::var("HTTPS_PROXY")
+            .or_else(|_| std::env::var("https_proxy"))
+            .or_else(|_| std::env::var("HTTP_PROXY"))
+            .or_else(|_| std::env::var("http_proxy"))
+        {
+            if let Ok(proxy) = ureq::Proxy::new(&proxy_url) {
+                builder = builder.proxy(proxy);
+            }
+        }
+
+        Self {
+            agent: builder.build(),
+        }
+    }
+}
 
 impl HttpClient for UreqHttpClient {
     fn get(&self, url: &str, headers: Headers) -> Result<HttpResponse> {
-        let mut request = ureq::get(url);
+        let mut request = self.agent.get(url);
         for (key, value) in &headers {
             request = request.set(key, value);
         }
@@ -140,7 +172,7 @@ impl HttpClient for UreqHttpClient {
     }
 
     fn post(&self, url: &str, headers: Headers, body: String) -> Result<HttpResponse> {
-        let mut request = ureq::post(url);
+        let mut request = self.agent.post(url);
         for (key, value) in &headers {
             request = request.set(key, value);
         }
@@ -151,7 +183,7 @@ impl HttpClient for UreqHttpClient {
     }
 
     fn patch(&self, url: &str, headers: Headers, body: String) -> Result<HttpResponse> {
-        let mut request = ureq::patch(url);
+        let mut request = self.agent.patch(url);
         for (key, value) in &headers {
             request = request.set(key, value);
         }
@@ -186,7 +218,7 @@ impl GitHubClient<UreqHttpClient> {
         Ok(Self {
             repository: repository.to_string(),
             token,
-            http: UreqHttpClient,
+            http: UreqHttpClient::new(),
         })
     }
 
@@ -195,7 +227,7 @@ impl GitHubClient<UreqHttpClient> {
         Self {
             repository: repository.to_string(),
             token,
-            http: UreqHttpClient,
+            http: UreqHttpClient::new(),
         }
     }
 

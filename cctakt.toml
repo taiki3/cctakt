@@ -2,7 +2,8 @@ worktree_dir = ".worktrees"
 branch_prefix = "cctakt"
 
 [github]
-auto_fetch_issues = false
+repository = "taiki3/cctakt"
+auto_fetch_issues = true
 labels = []
 
 [anthropic]

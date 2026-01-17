@@ -13,10 +13,14 @@ Please work on the following GitHub issue:
 {{body}}
 
 ## Instructions
-1. Read the issue carefully
-2. Implement the required changes
-3. Write tests if applicable
-4. Commit with message referencing the issue (e.g., "Fix #{{number}}: ...")
+1. Read the issue carefully and understand the requirements
+2. Explore the codebase to understand the context
+3. Implement the required changes
+4. Write tests if applicable
+5. Run tests to verify your changes work correctly
+6. Commit with message referencing the issue (e.g., "Fix #{{number}}: ...")
+
+IMPORTANT: Continue working until all tasks are complete. If you encounter errors, fix them. After committing, verify everything works and report completion status.
 "#;
 
 /// Task template for generating agent instructions from issues

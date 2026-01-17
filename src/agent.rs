@@ -6,12 +6,26 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// Status of an agent
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentStatus {
     Running,
     Ended,
+}
+
+/// Work state of an agent
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkState {
+    /// Agent is starting up
+    Starting,
+    /// Agent is actively working (receiving output)
+    Working,
+    /// Agent is idle (no output for a while, waiting for input)
+    Idle,
+    /// Agent has completed work (detected completion patterns)
+    Completed,
 }
 
 /// Represents a single Claude Code session
@@ -25,6 +39,12 @@ pub struct Agent {
     pub status: AgentStatus,
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     _output_thread: Option<JoinHandle<()>>,
+    /// Last time output was received
+    last_activity: Arc<Mutex<Instant>>,
+    /// Current work state
+    pub work_state: WorkState,
+    /// Whether task has been sent to this agent
+    pub task_sent: bool,
 }
 
 impl Agent {
@@ -45,6 +65,7 @@ impl Agent {
 
         // Spawn Claude Code in the specified working directory
         let mut cmd = CommandBuilder::new("claude");
+        cmd.arg("--dangerously-skip-permissions");
         cmd.cwd(&working_dir);
 
         let child = pair.slave.spawn_command(cmd).context("Failed to spawn claude")?;
@@ -55,6 +76,10 @@ impl Agent {
         let pty_writer = Some(pair.master.take_writer().context("Failed to take writer")?);
         let pty_master = Some(pair.master);
 
+        // Activity tracking
+        let last_activity = Arc::new(Mutex::new(Instant::now()));
+        let last_activity_clone = Arc::clone(&last_activity);
+
         // Spawn output reading thread
         let parser_clone = Arc::clone(&parser);
         let output_thread = std::thread::spawn(move || {
@@ -64,6 +89,10 @@ impl Agent {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        // Update activity timestamp
+                        if let Ok(mut ts) = last_activity_clone.lock() {
+                            *ts = Instant::now();
+                        }
                         let mut parser = parser_clone.lock().unwrap();
                         parser.process(&buf[..n]);
                     }
@@ -82,6 +111,9 @@ impl Agent {
             status: AgentStatus::Running,
             child: Some(child),
             _output_thread: Some(output_thread),
+            last_activity,
+            work_state: WorkState::Starting,
+            task_sent: false,
         })
     }
 
@@ -121,6 +153,120 @@ impl Agent {
             }
         }
         self.status
+    }
+
+    /// Get time since last activity
+    pub fn idle_duration(&self) -> Duration {
+        if let Ok(ts) = self.last_activity.lock() {
+            ts.elapsed()
+        } else {
+            Duration::ZERO
+        }
+    }
+
+    /// Get the current screen content as text
+    pub fn screen_text(&self) -> String {
+        if let Ok(parser) = self.parser.lock() {
+            let screen = parser.screen();
+            let mut text = String::new();
+            for row in 0..screen.size().0 {
+                let line = screen.contents_between(row, 0, row, screen.size().1);
+                text.push_str(&line);
+                text.push('\n');
+            }
+            text
+        } else {
+            String::new()
+        }
+    }
+
+    /// Check work state and update based on activity
+    /// Returns true if state changed to Completed
+    pub fn update_work_state(&mut self, idle_threshold: Duration) -> bool {
+        let old_state = self.work_state;
+
+        // Don't change state if task hasn't been sent yet
+        if !self.task_sent {
+            return false;
+        }
+
+        let idle_time = self.idle_duration();
+        let screen = self.screen_text();
+
+        // Only check for definite completion: prompt waiting + commit detected
+        let is_at_prompt = self.detect_prompt_waiting(&screen);
+        let has_committed = self.detect_commit_success(&screen);
+
+        match self.work_state {
+            WorkState::Starting => {
+                self.work_state = WorkState::Working;
+            }
+            WorkState::Working | WorkState::Idle => {
+                // Only mark as completed when:
+                // 1. Screen shows we're at a prompt (waiting for input)
+                // 2. There's evidence of a commit
+                // 3. Been idle for threshold time (to ensure stable state)
+                if is_at_prompt && has_committed && idle_time >= idle_threshold {
+                    self.work_state = WorkState::Completed;
+                } else if idle_time >= idle_threshold {
+                    self.work_state = WorkState::Idle;
+                } else if idle_time < Duration::from_millis(500) {
+                    self.work_state = WorkState::Working;
+                }
+            }
+            WorkState::Completed => {
+                // Stay completed
+            }
+        }
+
+        old_state != WorkState::Completed && self.work_state == WorkState::Completed
+    }
+
+    /// Detect if screen shows a prompt waiting for input
+    fn detect_prompt_waiting(&self, screen: &str) -> bool {
+        // Get last few non-empty lines
+        let lines: Vec<&str> = screen
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+
+        if let Some(last_line) = lines.last() {
+            let trimmed = last_line.trim();
+            // Claude Code prompt patterns
+            if trimmed.ends_with('>')
+                || trimmed.ends_with('$')
+                || trimmed.contains("❯")
+                || trimmed.ends_with(':')  // "Enter your message:"
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Detect if there's been a successful commit
+    fn detect_commit_success(&self, screen: &str) -> bool {
+        let lower = screen.to_lowercase();
+
+        // Commit success patterns
+        let patterns = [
+            "successfully committed",
+            "changes committed",
+            "created commit",
+            "commit created",
+            "[main",      // git output: [main abc1234]
+            "[master",
+            "files changed",
+            "insertions(+)",
+            "deletions(-)",
+        ];
+
+        for pattern in patterns {
+            if lower.contains(pattern) {
+                return true;
+            }
+        }
+        false
     }
 }
 
