@@ -1969,7 +1969,7 @@ fn ui(f: &mut Frame, app: &mut App) {
     if app.agent_manager.is_empty() {
         render_no_agent_menu(f, chunks[1]);
     } else {
-        render_split_pane_main_area(f, &app.agent_manager, chunks[1]);
+        render_split_pane_main_area(f, app, chunks[1]);
     }
 
     // Render overlays based on mode
@@ -1978,16 +1978,13 @@ fn ui(f: &mut Frame, app: &mut App) {
             let popup_area = centered_rect(80, 70, f.area());
             app.issue_picker.render(f, popup_area);
         }
-        AppMode::ReviewMerge => {
-            render_review_merge(f, app, f.area());
-        }
         AppMode::ThemePicker => {
             render_theme_picker(f, app, f.area());
         }
         AppMode::ConfirmBuild => {
             render_build_confirmation(f, app, f.area());
         }
-        AppMode::Normal => {}
+        AppMode::ReviewMerge | AppMode::Normal => {}
     }
 
     // Render notifications at the bottom
@@ -2453,13 +2450,50 @@ fn render_footer(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
 /// Render menu when no agents exist
 /// Render the main area with split panes for Interactive (left) and NonInteractive (right) agents
-fn render_split_pane_main_area(f: &mut Frame, agent_manager: &agent::AgentManager, area: ratatui::layout::Rect) {
-    let interactive = agent_manager.get_interactive();
-    let active_worker = agent_manager.get_active_non_interactive();
+fn render_split_pane_main_area(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    let interactive = app.agent_manager.get_interactive();
+    let active_worker = app.agent_manager.get_active_non_interactive();
+    let is_review_mode = app.mode == AppMode::ReviewMerge;
 
-    match (interactive, active_worker) {
+    match (interactive, active_worker, is_review_mode) {
+        // ReviewMerge mode with orchestrator: show orchestrator on left, review UI on right
+        (Some(orchestrator), _, true) => {
+            let t = theme();
+
+            // Split horizontally: left 50% for orchestrator, 1 column for border, right 50% for review
+            let main_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(50),
+                    Constraint::Length(1), // vertical separator
+                    Constraint::Percentage(50),
+                ])
+                .split(area);
+
+            // Left pane: Interactive (orchestrator)
+            if orchestrator.status == AgentStatus::Ended {
+                render_ended_agent(f, orchestrator, main_chunks[0]);
+            } else {
+                render_agent_screen(f, orchestrator, main_chunks[0]);
+            }
+
+            // Vertical separator
+            let separator_lines: Vec<Line> = (0..main_chunks[1].height)
+                .map(|_| Line::from("│"))
+                .collect();
+            let separator = Paragraph::new(separator_lines)
+                .style(Style::default().fg(t.border_secondary()));
+            f.render_widget(separator, main_chunks[1]);
+
+            // Right pane: Review UI
+            render_review_merge(f, app, main_chunks[2]);
+        }
+        // ReviewMerge mode without orchestrator: full width for review UI
+        (None, _, true) => {
+            render_review_merge(f, app, area);
+        }
         // Both Interactive and NonInteractive agents exist: split pane layout
-        (Some(orchestrator), Some(worker)) => {
+        (Some(orchestrator), Some(worker), false) => {
             let t = theme();
 
             // Split horizontally: left 50% for orchestrator, 1 column for border, right 50% for worker
@@ -2495,7 +2529,7 @@ fn render_split_pane_main_area(f: &mut Frame, agent_manager: &agent::AgentManage
             }
         }
         // Only Interactive agent: full width for orchestrator
-        (Some(orchestrator), None) => {
+        (Some(orchestrator), None, false) => {
             if orchestrator.status == AgentStatus::Ended {
                 render_ended_agent(f, orchestrator, area);
             } else {
@@ -2503,7 +2537,7 @@ fn render_split_pane_main_area(f: &mut Frame, agent_manager: &agent::AgentManage
             }
         }
         // Only NonInteractive agents: full width for worker
-        (None, Some(worker)) => {
+        (None, Some(worker), false) => {
             if worker.status == AgentStatus::Ended {
                 render_ended_agent(f, worker, area);
             } else {
@@ -2511,7 +2545,7 @@ fn render_split_pane_main_area(f: &mut Frame, agent_manager: &agent::AgentManage
             }
         }
         // No agents (shouldn't happen, but handle gracefully)
-        (None, None) => {
+        (None, None, false) => {
             render_no_agent_menu(f, area);
         }
     }
