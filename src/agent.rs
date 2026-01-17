@@ -677,6 +677,54 @@ impl AgentManager {
             self.active_index = global_idx;
         }
     }
+
+    /// Switch to the next worker (cycle through workers)
+    pub fn switch_to_next_worker(&mut self) {
+        let workers: Vec<_> = self.agents.iter()
+            .enumerate()
+            .filter(|(_, a)| a.mode == AgentMode::NonInteractive)
+            .map(|(idx, _)| idx)
+            .collect();
+
+        if workers.is_empty() {
+            return;
+        }
+
+        // Find current position in workers list
+        let current_pos = workers.iter()
+            .position(|&idx| idx == self.active_index)
+            .unwrap_or(0);
+
+        // Move to next worker (wrap around)
+        let next_pos = (current_pos + 1) % workers.len();
+        self.active_index = workers[next_pos];
+    }
+
+    /// Switch to the previous worker (cycle through workers)
+    pub fn switch_to_prev_worker(&mut self) {
+        let workers: Vec<_> = self.agents.iter()
+            .enumerate()
+            .filter(|(_, a)| a.mode == AgentMode::NonInteractive)
+            .map(|(idx, _)| idx)
+            .collect();
+
+        if workers.is_empty() {
+            return;
+        }
+
+        // Find current position in workers list
+        let current_pos = workers.iter()
+            .position(|&idx| idx == self.active_index)
+            .unwrap_or(0);
+
+        // Move to previous worker (wrap around)
+        let prev_pos = if current_pos == 0 {
+            workers.len() - 1
+        } else {
+            current_pos - 1
+        };
+        self.active_index = workers[prev_pos];
+    }
 }
 
 impl Default for AgentManager {

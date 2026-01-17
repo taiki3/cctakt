@@ -84,6 +84,15 @@ enum AppMode {
     ConfirmBuild,
 }
 
+/// Focused pane in split view
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusedPane {
+    /// Left pane (orchestrator/interactive agent)
+    Left,
+    /// Right pane (worker/non-interactive agent)
+    Right,
+}
+
 /// Review state for a completed agent
 struct ReviewState {
     /// Agent index being reviewed
@@ -174,6 +183,8 @@ struct App {
     content_cols: u16,
     /// Current application mode
     mode: AppMode,
+    /// Focused pane in split view
+    focused_pane: FocusedPane,
     /// Configuration
     config: Config,
     /// Worktree manager
@@ -230,6 +241,7 @@ impl App {
             content_rows: rows,
             content_cols: cols,
             mode: AppMode::Normal,
+            focused_pane: FocusedPane::Right, // Default to worker pane
             config,
             worktree_manager,
             github_client,
@@ -1908,6 +1920,31 @@ fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> b
             app.agent_manager.switch_to(index);
             true
         }
+        // Vim-style pane navigation (no modifiers)
+        // h: Focus left pane (orchestrator)
+        (KeyModifiers::NONE, KeyCode::Char('h')) => {
+            app.focused_pane = FocusedPane::Left;
+            true
+        }
+        // l: Focus right pane (worker)
+        (KeyModifiers::NONE, KeyCode::Char('l')) => {
+            app.focused_pane = FocusedPane::Right;
+            true
+        }
+        // j: Next worker (when focused on right pane)
+        (KeyModifiers::NONE, KeyCode::Char('j')) => {
+            if app.focused_pane == FocusedPane::Right {
+                app.agent_manager.switch_to_next_worker();
+            }
+            true
+        }
+        // k: Previous worker (when focused on right pane)
+        (KeyModifiers::NONE, KeyCode::Char('k')) => {
+            if app.focused_pane == FocusedPane::Right {
+                app.agent_manager.switch_to_prev_worker();
+            }
+            true
+        }
         _ => false,
     }
 }
@@ -2495,6 +2532,8 @@ fn render_split_pane_main_area(f: &mut Frame, app: &mut App, area: ratatui::layo
         // Both Interactive and NonInteractive agents exist: split pane layout
         (Some(orchestrator), Some(worker), false) => {
             let t = theme();
+            let left_focused = app.focused_pane == FocusedPane::Left;
+            let right_focused = app.focused_pane == FocusedPane::Right;
 
             // Split horizontally: left 50% for orchestrator, 1 column for border, right 50% for worker
             let main_chunks = Layout::default()
@@ -2506,22 +2545,41 @@ fn render_split_pane_main_area(f: &mut Frame, app: &mut App, area: ratatui::layo
                 ])
                 .split(area);
 
-            // Left pane: Interactive (orchestrator)
+            // Left pane: Interactive (orchestrator) with focus indicator
+            let left_area = main_chunks[0];
+            if left_focused {
+                // Draw focus indicator (top-left corner marker)
+                let focus_marker = Paragraph::new("◆")
+                    .style(Style::default().fg(t.neon_cyan()));
+                f.render_widget(focus_marker, ratatui::layout::Rect::new(left_area.x, left_area.y, 1, 1));
+            }
             if orchestrator.status == AgentStatus::Ended {
                 render_ended_agent(f, orchestrator, main_chunks[0]);
             } else {
                 render_agent_screen(f, orchestrator, main_chunks[0]);
             }
 
-            // Vertical separator
+            // Vertical separator - highlight based on focus
+            let separator_color = if left_focused || right_focused {
+                if left_focused { t.neon_cyan() } else { t.neon_pink() }
+            } else {
+                t.border_secondary()
+            };
             let separator_lines: Vec<Line> = (0..main_chunks[1].height)
                 .map(|_| Line::from("│"))
                 .collect();
             let separator = Paragraph::new(separator_lines)
-                .style(Style::default().fg(t.border_secondary()));
+                .style(Style::default().fg(separator_color));
             f.render_widget(separator, main_chunks[1]);
 
-            // Right pane: NonInteractive (worker)
+            // Right pane: NonInteractive (worker) with focus indicator
+            let right_area = main_chunks[2];
+            if right_focused {
+                // Draw focus indicator (top-left corner marker)
+                let focus_marker = Paragraph::new("◆")
+                    .style(Style::default().fg(t.neon_pink()));
+                f.render_widget(focus_marker, ratatui::layout::Rect::new(right_area.x, right_area.y, 1, 1));
+            }
             if worker.status == AgentStatus::Ended {
                 render_ended_agent(f, worker, main_chunks[2]);
             } else {
