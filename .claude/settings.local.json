@@ -32,7 +32,12 @@
       "Bash(git -C .worktrees/feat-theme-switching-3 diff --stat)",
       "Bash(git -C .worktrees/feat-theme-switching-3 log --oneline -3)",
       "Bash(git -C .worktrees/feat-theme-switching-3 status -s)",
-      "Bash(git merge:*)"
+      "Bash(git merge:*)",
+      "Bash(git commitしてください。\" in task_description.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C .worktrees/feat-footer-statusbar log:*)",
+      "Bash(git -C .worktrees/feat-footer-statusbar status -s)",
+      "Bash(git -C .worktrees/feat-footer-statusbar diff --stat main..HEAD)",
+      "Bash(git -C .worktrees/feat-footer-statusbar branch:*)"
     ]
   }
 }

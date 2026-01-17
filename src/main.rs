@@ -80,6 +80,8 @@ enum AppMode {
     ReviewMerge,
     /// Theme picker mode
     ThemePicker,
+    /// Build confirmation after merge
+    ConfirmBuild,
 }
 
 /// Review state for a completed agent
@@ -206,6 +208,8 @@ struct App {
     show_theme_picker: bool,
     /// Theme picker: currently selected index
     theme_picker_index: usize,
+    /// Branch name for build confirmation after merge
+    pending_build_branch: Option<String>,
 }
 
 impl App {
@@ -243,6 +247,7 @@ impl App {
             merge_queue: MergeQueue::new(),
             show_theme_picker: false,
             theme_picker_index: 0,
+            pending_build_branch: None,
         }
     }
 
@@ -693,6 +698,10 @@ impl App {
                 let _ = self.plan_manager.save(plan);
             }
         }
+
+        // Ask user if they want to run build
+        self.pending_build_branch = Some(task.branch.clone());
+        self.mode = AppMode::ConfirmBuild;
     }
 
     /// Handle failed merge
@@ -707,6 +716,48 @@ impl App {
             if let Some(ref mut plan) = self.current_plan {
                 plan.mark_failed(task_id, "MergeWorker could not complete merge");
                 let _ = self.plan_manager.save(plan);
+            }
+        }
+    }
+
+    /// Spawn BuildWorker to run cargo build after merge
+    fn spawn_build_worker(&mut self) {
+        let repo_path = match env::current_dir() {
+            Ok(p) => p,
+            Err(e) => {
+                self.add_notification(
+                    format!("Failed to get current directory: {e}"),
+                    cctakt::plan::NotifyLevel::Error,
+                );
+                return;
+            }
+        };
+
+        let task_description = "マージ後のビルドチェックを実行してください。\n\n\
+             手順:\n\
+             1. cargo build を実行\n\
+             2. エラーがあれば修正してコミット\n\
+             3. cargo test を実行（オプション）\n\n\
+             ビルドが成功したら完了です。"
+            .to_string();
+
+        match self.agent_manager.add_non_interactive(
+            "build-worker".to_string(),
+            repo_path,
+            &task_description,
+            Some(15), // max_turns: enough for build fixes
+        ) {
+            Ok(agent_id) => {
+                self.add_notification(
+                    format!("BuildWorker started (agent {})", agent_id),
+                    cctakt::plan::NotifyLevel::Info,
+                );
+            }
+            Err(e) => {
+                self.add_notification(
+                    format!("Failed to start BuildWorker: {e}"),
+                    cctakt::plan::NotifyLevel::Error,
+                );
             }
         }
     }
@@ -1733,6 +1784,23 @@ fn run_tui() -> Result<()> {
                             // Handle theme picker input
                             handle_theme_picker_input(&mut app, key.code);
                         }
+                        AppMode::ConfirmBuild => {
+                            // Handle build confirmation input
+                            match key.code {
+                                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                                    // Run build
+                                    app.spawn_build_worker();
+                                    app.pending_build_branch = None;
+                                    app.mode = AppMode::Normal;
+                                }
+                                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                    // Skip build
+                                    app.pending_build_branch = None;
+                                    app.mode = AppMode::Normal;
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                 }
                 Event::Resize(new_cols, new_rows) => {
@@ -1914,6 +1982,9 @@ fn ui(f: &mut Frame, app: &mut App) {
         AppMode::ThemePicker => {
             render_theme_picker(f, app, f.area());
         }
+        AppMode::ConfirmBuild => {
+            render_build_confirmation(f, app, f.area());
+        }
         AppMode::Normal => {}
     }
 
@@ -2006,6 +2077,56 @@ fn render_plan_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let status_widget = Paragraph::new(status_text).style(style);
     f.render_widget(status_widget, status_area);
+}
+
+/// Render build confirmation dialog
+fn render_build_confirmation(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let t = theme();
+
+    // Calculate popup size
+    let popup_width = 50u16;
+    let popup_height = 7u16;
+
+    // Center the popup
+    let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = ratatui::layout::Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear background
+    f.render_widget(Clear, popup_area);
+
+    let branch_name = app
+        .pending_build_branch
+        .as_deref()
+        .unwrap_or("unknown");
+
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Merged: {}", branch_name),
+            Style::default().fg(Color::Green),
+        )),
+        Line::from(""),
+        Line::from("Run build? (y/n)"),
+        Line::from(""),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(t.style_dialog_border())
+        .style(t.style_dialog_bg())
+        .title(Span::styled(
+            " Build Confirmation ",
+            Style::default()
+                .fg(t.neon_cyan())
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .alignment(ratatui::layout::Alignment::Center);
+
+    f.render_widget(paragraph, popup_area);
 }
 
 /// Render theme picker modal
