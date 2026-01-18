@@ -307,32 +307,6 @@ pub fn run_tui() -> Result<()> {
                             // Handle theme picker input
                             handle_theme_picker_input(&mut app, key.code);
                         }
-                        AppMode::ConfirmBuild => {
-                            // Handle build confirmation input
-                            match key.code {
-                                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                                    // Run build
-                                    let branch = app.pending_build_branch.take().unwrap_or_else(|| "unknown".to_string());
-                                    app.spawn_build_worker(branch);
-                                    app.mode = AppMode::Normal;
-                                }
-                                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('q') => {
-                                    // Skip build - show task complete
-                                    let branch = app.pending_build_branch.take().unwrap_or_else(|| "unknown".to_string());
-                                    app.show_task_complete(branch, false, None);
-                                }
-                                _ => {}
-                            }
-                        }
-                        AppMode::TaskComplete => {
-                            // Handle task complete screen input
-                            match key.code {
-                                KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => {
-                                    app.close_task_complete();
-                                }
-                                _ => {}
-                            }
-                        }
                     }
                 }
                 Event::Resize(new_cols, new_rows) => {

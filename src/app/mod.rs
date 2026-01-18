@@ -2,7 +2,7 @@
 
 pub mod types;
 
-pub use types::{AppMode, FocusedPane, InputMode, MergeQueue, MergeTask, Notification, ReviewState, TaskCompleteState};
+pub use types::{AppMode, FocusedPane, InputMode, MergeQueue, MergeTask, Notification, ReviewState};
 
 use crate::agent::{AgentManager, AgentStatus};
 use crate::git_utils::{detect_github_repo, get_commit_log, get_worker_commits};
@@ -62,10 +62,6 @@ pub struct App {
     pub show_theme_picker: bool,
     /// Theme picker: currently selected index
     pub theme_picker_index: usize,
-    /// Branch name for build confirmation after merge
-    pub pending_build_branch: Option<String>,
-    /// Task completion state
-    pub task_complete_state: Option<TaskCompleteState>,
     /// BuildWorker agent index (None if not spawned)
     pub build_worker_index: Option<usize>,
     /// Branch name associated with the current build worker
@@ -109,8 +105,6 @@ impl App {
             merge_queue: MergeQueue::new(),
             show_theme_picker: false,
             theme_picker_index: 0,
-            pending_build_branch: None,
-            task_complete_state: None,
             build_worker_index: None,
             build_worker_branch: None,
         }
@@ -576,9 +570,8 @@ impl App {
             }
         }
 
-        // Ask user if they want to run build
-        self.pending_build_branch = Some(task.branch.clone());
-        self.mode = AppMode::ConfirmBuild;
+        // Automatically run build (no confirmation dialog)
+        self.spawn_build_worker(task.branch.clone());
     }
 
     /// Handle failed merge
@@ -609,8 +602,6 @@ impl App {
                     format!("Failed to get current directory: {e}"),
                     cctakt::plan::NotifyLevel::Error,
                 );
-                // Show task complete without build
-                self.show_task_complete(branch, false, None);
                 return;
             }
         };
@@ -645,13 +636,11 @@ impl App {
                     format!("Failed to start BuildWorker: {e}"),
                     cctakt::plan::NotifyLevel::Error,
                 );
-                // Show task complete without build
-                self.show_task_complete(branch, false, None);
             }
         }
     }
 
-    /// Check BuildWorker completion and transition to TaskComplete mode
+    /// Check BuildWorker completion and show notification (no popup)
     pub fn check_build_worker_completion(&mut self) {
         let Some(worker_idx) = self.build_worker_index else {
             return;
@@ -675,40 +664,23 @@ impl App {
         self.agent_manager.close(worker_idx);
         self.build_worker_index = None;
 
-        // Show task completion screen
-        self.show_task_complete(branch, true, Some(build_success));
+        // Show notification instead of popup
+        if build_success {
+            self.add_notification(
+                format!("Build succeeded: {}", branch),
+                cctakt::plan::NotifyLevel::Success,
+            );
+        } else {
+            self.add_notification(
+                format!("Build failed: {}", branch),
+                cctakt::plan::NotifyLevel::Error,
+            );
+        }
     }
 
     /// Cancel review and return to normal mode
     pub fn cancel_review(&mut self) {
         self.review_state = None;
-        self.mode = AppMode::Normal;
-    }
-
-    /// Show task completion screen
-    pub fn show_task_complete(&mut self, branch: String, build_run: bool, build_success: Option<bool>) {
-        let message = if build_run {
-            if build_success == Some(true) {
-                format!("タスク完了: {} をマージし、ビルドが成功しました", branch)
-            } else {
-                format!("タスク完了: {} をマージしましたが、ビルドに失敗しました", branch)
-            }
-        } else {
-            format!("タスク完了: {} をマージしました", branch)
-        };
-
-        self.task_complete_state = Some(TaskCompleteState {
-            branch,
-            build_run,
-            build_success,
-            message,
-        });
-        self.mode = AppMode::TaskComplete;
-    }
-
-    /// Close task completion screen and return to normal mode
-    pub fn close_task_complete(&mut self) {
-        self.task_complete_state = None;
         self.mode = AppMode::Normal;
     }
 
