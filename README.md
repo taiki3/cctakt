@@ -4,79 +4,105 @@
 
 ![cctakt screenshot](cctakt.png)
 
+cctakt は、複数の Claude Code エージェントを Git Worktree で管理し、並列でコーディングタスクを実行するための Rust 製 TUI アプリケーションです。
+
 ## 特徴
 
-- **並列実行**: Git Worktree で複数タスクを同時実行
-- **指揮者モード**: 左ペインで指揮者 Claude Code が全体を統括
-- **ワーカー管理**: 右ペインで各ワーカーの進捗をリアルタイム監視
-- **自動レビュー**: タスク完了時に diff を表示、ワンキーでマージ
-- **GitHub Issues連携**: Issue から直接ワーカーを作成
-- **プラン機能**: .cctakt/plan.json でタスクを定義、自動実行
+- **並列実行**: Git Worktree を活用し、複数のタスクを同時並行で実行
+- **指揮者モード**: メインリポジトリで Claude Code を「指揮者」として起動し、plan.json を通じてワーカーを統括
+- **ワーカー管理**: 各ワーカーの PTY 出力をリアルタイムで確認・操作可能
+- **自動レビュー**: ワーカー完了時に diff を表示し、マージ判断をサポート
+- **GitHub Issues 連携**: Issue からワーカーを自動生成、ブランチ名を提案
+- **プラン機能**: `.cctakt/plan.json` を通じた構造化タスク管理
+- **テーマ**: 6種類のカラーテーマ（Cyberpunk, Monokai, Dracula, Nord, Arctic Aurora, Minimal）
 
 ## インストール
 
 ```bash
+# リポジトリをクローン
+git clone https://github.com/your-username/cctakt.git
+cd cctakt
+
+# ビルド
+cargo build --release
+
+# インストール（オプション）
 cargo install --path .
 ```
 
 ## 使い方
 
-### TUI起動
-
 ```bash
+# TUI を起動
 cctakt
+
+# プロジェクトを初期化
+cctakt init
+
+# 環境設定を確認
+cctakt status
+
+# GitHub Issues を一覧表示
+cctakt issues
+
+# プランを実行（CLI モード）
+cctakt run .cctakt/plan.json
 ```
 
-### キーバインド
+## キーバインド
 
-#### グローバル
-| キー | 動作 |
+### グローバル
+
+| キー | 説明 |
 |------|------|
-| Ctrl+Q | 終了 |
-| Ctrl+T | テーマ切替 |
-| Ctrl+I / F2 | Issue picker |
-| Ctrl+W | アクティブエージェント終了 |
-| Ctrl+N/P | タブ切替 |
-| Ctrl+1-9 | タブ番号で切替 |
+| `Ctrl+Q` | 終了 |
+| `Ctrl+T` | テーマピッカーを開く |
+| `Ctrl+I` / `F2` | Issue ピッカーを開く |
+| `Ctrl+W` | アクティブなエージェントを閉じる |
+| `Ctrl+N` | 次のタブへ |
+| `Ctrl+P` | 前のタブへ |
+| `Ctrl+1-9` / `Alt+1-9` | タブを番号で切り替え |
 
-#### ナビゲーションモード
-| キー | 動作 |
+### ナビゲーションモード
+
+| キー | 説明 |
 |------|------|
-| h/l | 左右ペイン移動 |
-| j/k | ワーカー間移動 |
-| i / Enter | 入力モードへ |
+| `h` | 左ペインへ移動 |
+| `l` | 右ペインへ移動 |
+| `j` | 次のワーカーへ（右ペイン時） |
+| `k` | 前のワーカーへ（右ペイン時） |
+| `i` / `Enter` | 入力モードへ切り替え |
 
-#### 入力モード
-| キー | 動作 |
+### 入力モード
+
+| キー | 説明 |
 |------|------|
-| Esc | ナビゲーションモードへ |
-| その他 | エージェントに送信 |
+| `Esc` | ナビゲーションモードへ戻る |
+| 任意のキー | エージェントへ入力を送信 |
 
-#### レビューモード（タスク完了時）
-| キー | 動作 |
+### レビューモード
+
+| キー | 説明 |
 |------|------|
-| Enter / m | マージ |
-| q / c | キャンセル |
-| j/k | スクロール |
-| PageUp/Down | ページスクロール |
+| `j` / `↓` | 下へスクロール |
+| `k` / `↑` | 上へスクロール |
+| `d` / `Ctrl+D` | 半ページ下へ |
+| `u` / `Ctrl+U` | 半ページ上へ |
+| `g` | 先頭へ |
+| `G` | 末尾へ |
+| `m` / `Enter` | マージを実行 |
+| `Esc` / `q` | レビューをキャンセル |
 
-### CLIコマンド
+## 指揮者モードと plan.json
 
-```bash
-cctakt init          # 初期化
-cctakt status        # 環境状態確認
-cctakt issues        # GitHub Issues一覧
-cctakt run [plan]    # プランをCLIモードで実行
-```
+cctakt は「指揮者モード」をサポートしています。メインリポジトリで Claude Code を起動し、`.cctakt/plan.json` にプランを書き込むことで、cctakt がワーカーを自動的に生成・管理します。
 
-## 指揮者モード
-
-指揮者（左ペインの Claude Code）に `.cctakt/plan.json` を書かせることで、複数ワーカーを自動起動できます。
+### plan.json の構造
 
 ```json
 {
   "version": 1,
-  "description": "タスク説明",
+  "description": "タスクの説明",
   "tasks": [
     {
       "id": "worker-1",
@@ -86,27 +112,102 @@ cctakt run [plan]    # プランをCLIモードで実行
         "task_description": "実装内容の詳細"
       },
       "status": "pending"
+    },
+    {
+      "id": "review-1",
+      "action": {
+        "type": "request_review",
+        "branch": "feat/example",
+        "after_task": "worker-1"
+      },
+      "status": "pending"
     }
   ]
 }
 ```
 
-## 設定
+### サポートされるアクション
 
-`.cctakt.toml` で設定:
+| タイプ | 説明 |
+|--------|------|
+| `create_worker` | Worktree を作成し、ワーカーエージェントを起動 |
+| `create_pr` | プルリクエストを作成 |
+| `merge_branch` | ブランチをマージ |
+| `cleanup_worktree` | Worktree を削除 |
+| `run_command` | コマンドを実行 |
+| `notify` | 通知メッセージを表示 |
+| `request_review` | レビューモードを開始 |
+
+### タスクステータス
+
+- `pending`: 実行待ち
+- `running`: 実行中
+- `completed`: 完了
+- `failed`: 失敗
+- `skipped`: スキップ
+
+## 設定ファイル
+
+プロジェクトルートに `.cctakt.toml` を配置して設定をカスタマイズできます。
 
 ```toml
-branch_prefix = "cctakt"
+# Worktree の保存先
 worktree_dir = ".worktrees"
+
+# ブランチ名のプレフィックス
+branch_prefix = "cctakt"
+
+# カラーテーマ: cyberpunk, monokai, dracula, nord, arctic, minimal
 theme = "cyberpunk"
 
 [github]
+# Issue を自動取得するか
+auto_fetch_issues = false
+# リポジトリ（owner/repo 形式）
 repository = "owner/repo"
+# フィルタするラベル
+labels = ["cctakt", "good first issue"]
+
+[anthropic]
+# Anthropic API キー（環境変数 ANTHROPIC_API_KEY でも設定可能）
+# api_key = "sk-ant-..."
+# 使用するモデル
+model = "claude-sonnet-4-20250514"
+# 最大トークン数
+max_tokens = 1024
+# PR 説明を自動生成するか
+auto_generate_pr_description = true
+
+[keybindings]
+new_agent = "ctrl+t"
+close_agent = "ctrl+w"
+next_tab = "tab"
+prev_tab = "shift+tab"
+quit = "ctrl+q"
 ```
 
 ## Tech Stack
 
-- Rust
-- ratatui (TUI)
-- portable-pty (PTY管理)
-- tokio (非同期ランタイム)
+| カテゴリ | 技術 |
+|----------|------|
+| 言語 | Rust (Edition 2024) |
+| TUI | [ratatui](https://github.com/ratatui-org/ratatui) |
+| ターミナル | [portable-pty](https://github.com/wez/wezterm/tree/main/pty) + [vt100](https://crates.io/crates/vt100) |
+| CLI | [clap](https://github.com/clap-rs/clap) |
+| HTTP | [ureq](https://github.com/algesten/ureq) |
+| 設定 | [toml](https://crates.io/crates/toml) + [serde](https://serde.rs/) |
+
+## アーキテクチャ
+
+```
+cctakt (TUI)
+├── 指揮者 Claude Code (メインリポジトリ)
+│   └── .cctakt/plan.json にプラン書き込み
+│
+└── Worker Claude Code (各 Worktree)
+    └── 実際のタスク実行
+```
+
+## ライセンス
+
+MIT
