@@ -220,6 +220,22 @@ pub fn run_tui() -> Result<()> {
                                                     }
                                                 };
 
+                                                // If focused on non-interactive agent (worker),
+                                                // allow h/l for pane navigation since workers don't accept input
+                                                if !use_interactive {
+                                                    match key.code {
+                                                        KeyCode::Char('h') => {
+                                                            app.focused_pane = FocusedPane::Left;
+                                                            continue;
+                                                        }
+                                                        KeyCode::Char('l') => {
+                                                            app.focused_pane = FocusedPane::Right;
+                                                            continue;
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+
                                                 let agent = if use_interactive {
                                                     app.agent_manager.get_interactive_mut()
                                                 } else {
