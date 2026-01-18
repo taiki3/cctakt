@@ -14,10 +14,6 @@ pub enum AppMode {
     ReviewMerge,
     /// Theme picker mode
     ThemePicker,
-    /// Build confirmation after merge
-    ConfirmBuild,
-    /// Task complete - shows completion summary
-    TaskComplete,
 }
 
 /// Focused pane in split view
@@ -122,18 +118,6 @@ pub struct Notification {
     pub message: String,
     pub level: cctakt::plan::NotifyLevel,
     pub created_at: std::time::Instant,
-}
-
-/// Task completion state for the TaskComplete mode
-pub struct TaskCompleteState {
-    /// Branch name that was merged
-    pub branch: String,
-    /// Whether the build was run
-    pub build_run: bool,
-    /// Whether the build succeeded (None if not run)
-    pub build_success: Option<bool>,
-    /// Summary message
-    pub message: String,
 }
 
 #[cfg(test)]
