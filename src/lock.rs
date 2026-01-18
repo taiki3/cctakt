@@ -117,45 +117,61 @@ impl Drop for LockFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::env;
 
-    #[test]
-    fn test_acquire_and_release() {
-        // テスト用の一時ディレクトリで実行
+    /// テスト用にカレントディレクトリを変更してテストを実行する
+    /// 他のテストと競合しないよう、完了後に元のディレクトリに戻す
+    fn run_in_temp_dir<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let original_dir = env::current_dir().unwrap();
         let temp_dir = tempfile::tempdir().unwrap();
         env::set_current_dir(&temp_dir).unwrap();
 
-        // ロックを取得
-        let lock = LockFile::acquire().expect("ロック取得に失敗");
+        let result = f();
 
-        // ロックファイルが存在することを確認
-        assert!(PathBuf::from(LOCK_FILE_NAME).exists());
-
-        // ロックを解放
-        lock.release();
-
-        // ロックファイルが削除されたことを確認
-        assert!(!PathBuf::from(LOCK_FILE_NAME).exists());
+        // テスト完了後に元のディレクトリに戻す
+        env::set_current_dir(&original_dir).unwrap();
+        result
     }
 
     #[test]
+    #[serial]
+    fn test_acquire_and_release() {
+        run_in_temp_dir(|| {
+            // ロックを取得
+            let lock = LockFile::acquire().expect("ロック取得に失敗");
+
+            // ロックファイルが存在することを確認
+            assert!(PathBuf::from(LOCK_FILE_NAME).exists());
+
+            // ロックを解放
+            lock.release();
+
+            // ロックファイルが削除されたことを確認
+            assert!(!PathBuf::from(LOCK_FILE_NAME).exists());
+        });
+    }
+
+    #[test]
+    #[serial]
     fn test_stale_lock_cleanup() {
-        // テスト用の一時ディレクトリで実行
-        let temp_dir = tempfile::tempdir().unwrap();
-        env::set_current_dir(&temp_dir).unwrap();
+        run_in_temp_dir(|| {
+            // 存在しないPIDでロックファイルを作成（古いロックをシミュレート）
+            fs::create_dir_all(".cctakt").unwrap();
+            fs::write(LOCK_FILE_NAME, "999999999").unwrap(); // 存在しないであろうPID
 
-        // 存在しないPIDでロックファイルを作成（古いロックをシミュレート）
-        fs::create_dir_all(".cctakt").unwrap();
-        fs::write(LOCK_FILE_NAME, "999999999").unwrap(); // 存在しないであろうPID
+            // ロックを取得できることを確認（古いロックは削除される）
+            let lock = LockFile::acquire().expect("古いロックがあっても取得できるはず");
 
-        // ロックを取得できることを確認（古いロックは削除される）
-        let lock = LockFile::acquire().expect("古いロックがあっても取得できるはず");
+            // 現在のPIDが書き込まれていることを確認
+            let content = fs::read_to_string(LOCK_FILE_NAME).unwrap();
+            assert_eq!(content, process::id().to_string());
 
-        // 現在のPIDが書き込まれていることを確認
-        let content = fs::read_to_string(LOCK_FILE_NAME).unwrap();
-        assert_eq!(content, process::id().to_string());
-
-        lock.release();
+            lock.release();
+        });
     }
 
     #[test]
