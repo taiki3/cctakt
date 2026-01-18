@@ -550,8 +550,8 @@ pub fn render_footer(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     // Add input mode indicator
     left_spans.push(Span::styled(" | ", t.style_text_muted()));
     let (mode_text, mode_style) = match app.input_mode {
-        InputMode::Navigation => ("NAV", t.style_warning()),
-        InputMode::Input => ("INS", t.style_success()),
+        InputMode::Navigation => ("NAV(i:入力)", t.style_warning()),
+        InputMode::Input => ("INS(Esc:移動)", t.style_success()),
     };
     left_spans.push(Span::styled(mode_text, mode_style));
 
