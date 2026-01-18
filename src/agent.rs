@@ -629,6 +629,16 @@ impl AgentManager {
         self.agents.iter().filter(|a| a.mode == AgentMode::NonInteractive).collect()
     }
 
+    /// Check if there are any non-interactive agents
+    pub fn has_non_interactive(&self) -> bool {
+        self.agents.iter().any(|a| a.mode == AgentMode::NonInteractive)
+    }
+
+    /// Get mutable references to all non-interactive agents
+    pub fn get_all_non_interactive_mut(&mut self) -> impl Iterator<Item = &mut Agent> {
+        self.agents.iter_mut().filter(|a| a.mode == AgentMode::NonInteractive)
+    }
+
     /// Get the active NonInteractive agent (based on active_index among workers)
     pub fn get_active_non_interactive(&self) -> Option<&Agent> {
         let workers: Vec<_> = self.agents.iter()
