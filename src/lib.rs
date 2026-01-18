@@ -65,8 +65,11 @@ pub use issue_picker::{IssuePicker, IssuePickerResult};
 pub use template::{TaskTemplate, render_task, suggest_branch_name, suggest_commit_message};
 pub use anthropic::AnthropicClient;
 pub use theme::{
-    theme, set_theme, create_theme, available_themes, current_theme_id, ColorTheme,
-    CyberpunkTheme, MonokaiTheme, DraculaTheme, NordTheme, MinimalTheme,
+    theme, set_theme, set_theme_by_id, set_theme_from_str, create_theme,
+    available_themes, current_theme_id, current_theme_id_str, get_theme_colors,
+    ColorTheme, ThemeColors, ThemeId,
+    CyberpunkTheme, MonokaiTheme, DraculaTheme, NordTheme, ArcticAuroraTheme, MinimalTheme,
+    CYBERPUNK, MONOKAI, DRACULA, NORD, ARCTIC_AURORA, MINIMAL,
 };
 #[allow(deprecated)]
 pub use theme::Theme;

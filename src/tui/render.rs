@@ -272,7 +272,7 @@ pub fn render_task_complete(f: &mut Frame, app: &App, area: ratatui::layout::Rec
 pub fn render_theme_picker(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let t = theme();
     let themes = available_themes();
-    let current_theme = current_theme_id();
+    let current_theme_id_str = current_theme_id().id();
 
     // Calculate popup size
     let popup_width = 40u16;
@@ -297,7 +297,7 @@ pub fn render_theme_picker(f: &mut Frame, app: &App, area: ratatui::layout::Rect
 
     for (i, (id, name, description)) in themes.iter().enumerate() {
         let is_selected = i == app.theme_picker_index;
-        let is_current = *id == current_theme;
+        let is_current = *id == current_theme_id_str;
 
         let prefix = if is_selected { " > " } else { "   " };
         let suffix = if is_current { " ✓" } else { "" };
