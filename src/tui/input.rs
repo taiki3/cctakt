@@ -1,7 +1,7 @@
 //! Input handling for TUI
 
 use crate::app::{App, AppMode, FocusedPane, InputMode};
-use cctakt::available_themes;
+use cctakt::{available_themes, plan::NotifyLevel};
 use crossterm::event::{KeyCode, KeyModifiers};
 
 /// Handle special keybindings, returns true if handled
@@ -36,6 +36,24 @@ pub fn handle_keybinding(app: &mut App, modifiers: KeyModifiers, code: KeyCode) 
         // Ctrl+P: Previous tab
         (KeyModifiers::CONTROL, KeyCode::Char('p' | 'P')) => {
             app.agent_manager.prev();
+            true
+        }
+        // Ctrl+R: Restart conductor (orchestrator)
+        (KeyModifiers::CONTROL, KeyCode::Char('r' | 'R')) => {
+            match app.restart_conductor() {
+                Ok(()) => {
+                    app.add_notification(
+                        "Conductor restarted".to_string(),
+                        NotifyLevel::Success,
+                    );
+                }
+                Err(e) => {
+                    app.add_notification(
+                        format!("Failed to restart conductor: {e}"),
+                        NotifyLevel::Error,
+                    );
+                }
+            }
             true
         }
         // Ctrl+1-9: Switch to tab by number

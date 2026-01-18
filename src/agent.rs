@@ -762,6 +762,41 @@ impl AgentManager {
         };
         self.active_index = workers[prev_pos];
     }
+
+    /// Restart the interactive (orchestrator) agent
+    /// Stops the existing orchestrator and spawns a new one
+    pub fn restart_interactive(&mut self, rows: u16, cols: u16) -> Result<()> {
+        // Find and remove existing interactive agent
+        if let Some(idx) = self.agents.iter().position(|a| a.mode == AgentMode::Interactive) {
+            self.agents.remove(idx);
+            // Adjust active_index if needed
+            if self.active_index >= self.agents.len() && !self.agents.is_empty() {
+                self.active_index = self.agents.len() - 1;
+            } else if idx < self.active_index && self.active_index > 0 {
+                self.active_index -= 1;
+            }
+        }
+
+        // Get working directory
+        let working_dir = std::env::current_dir()
+            .context("Failed to get current directory for orchestrator restart")?;
+
+        // Spawn new orchestrator
+        let agent = Agent::spawn(
+            self.next_id,
+            "Orchestrator".to_string(),
+            working_dir,
+            rows,
+            cols,
+        )?;
+        self.next_id += 1;
+
+        // Insert at the beginning (orchestrator is always first)
+        self.agents.insert(0, agent);
+        self.active_index = 0;
+
+        Ok(())
+    }
 }
 
 impl Default for AgentManager {
