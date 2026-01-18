@@ -247,6 +247,9 @@ impl App {
         self.agent_issues.push(Some(issue));
         self.agent_worktrees.push(worktree_path);
 
+        // Update PTY sizes for pane split
+        self.update_agent_sizes();
+
         Ok(())
     }
 
@@ -475,6 +478,8 @@ impl App {
                 // Find the agent index (it's the last one added)
                 let agent_index = self.agent_manager.len() - 1;
                 self.merge_queue.worker_agent_index = Some(agent_index);
+                // Update PTY sizes for pane split
+                self.update_agent_sizes();
                 self.add_notification(
                     format!("MergeWorker started (agent {})", agent_id),
                     cctakt::plan::NotifyLevel::Info,
@@ -628,6 +633,8 @@ impl App {
                 let agent_index = self.agent_manager.len() - 1;
                 self.build_worker_index = Some(agent_index);
                 self.build_worker_branch = Some(branch);
+                // Update PTY sizes for pane split
+                self.update_agent_sizes();
                 self.add_notification(
                     format!("BuildWorker started (agent {})", agent_id),
                     cctakt::plan::NotifyLevel::Info,
@@ -997,6 +1004,9 @@ impl App {
                 self.agent_worktrees.push(worktree_path);
                 self.task_agents.insert(task_id.to_string(), agent_index);
 
+                // Update PTY sizes for pane split
+                self.update_agent_sizes();
+
                 debug::log_task(task_id, "pending", "running");
                 self.add_notification(
                     format!("Worker started: {name}"),
@@ -1238,6 +1248,29 @@ impl App {
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.content_cols = cols;
         self.content_rows = rows;
-        self.agent_manager.resize_all(cols, rows);
+        self.update_agent_sizes();
+    }
+
+    /// Update PTY sizes based on current pane layout
+    pub fn update_agent_sizes(&mut self) {
+        let has_workers = self.agent_manager.has_non_interactive();
+
+        if has_workers {
+            // Split view: 50% each (minus separator)
+            let pane_width = (self.content_cols.saturating_sub(1)) / 2;
+
+            // Resize interactive agent (left pane)
+            if let Some(agent) = self.agent_manager.get_interactive_mut() {
+                agent.resize(pane_width, self.content_rows);
+            }
+
+            // Resize non-interactive agents (right pane)
+            for agent in self.agent_manager.get_all_non_interactive_mut() {
+                agent.resize(pane_width, self.content_rows);
+            }
+        } else {
+            // Full width for single agent
+            self.agent_manager.resize_all(self.content_cols, self.content_rows);
+        }
     }
 }
