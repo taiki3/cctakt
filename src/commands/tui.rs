@@ -289,14 +289,23 @@ pub fn run_tui() -> Result<()> {
                             match key.code {
                                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                                     // Run build
-                                    app.spawn_build_worker();
-                                    app.pending_build_branch = None;
+                                    let branch = app.pending_build_branch.take().unwrap_or_else(|| "unknown".to_string());
+                                    app.spawn_build_worker(branch);
                                     app.mode = AppMode::Normal;
                                 }
                                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('q') => {
-                                    // Skip build (n for no, q to quit)
-                                    app.pending_build_branch = None;
-                                    app.mode = AppMode::Normal;
+                                    // Skip build - show task complete
+                                    let branch = app.pending_build_branch.take().unwrap_or_else(|| "unknown".to_string());
+                                    app.show_task_complete(branch, false, None);
+                                }
+                                _ => {}
+                            }
+                        }
+                        AppMode::TaskComplete => {
+                            // Handle task complete screen input
+                            match key.code {
+                                KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => {
+                                    app.close_task_complete();
                                 }
                                 _ => {}
                             }
@@ -322,6 +331,9 @@ pub fn run_tui() -> Result<()> {
 
         // Check MergeWorker completion
         app.check_merge_worker_completion();
+
+        // Check BuildWorker completion
+        app.check_build_worker_completion();
 
         app.cleanup_notifications();
 

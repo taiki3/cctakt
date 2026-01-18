@@ -2,7 +2,7 @@
 
 pub mod types;
 
-pub use types::{AppMode, FocusedPane, InputMode, MergeQueue, MergeTask, Notification, ReviewState};
+pub use types::{AppMode, FocusedPane, InputMode, MergeQueue, MergeTask, Notification, ReviewState, TaskCompleteState};
 
 use crate::agent::{AgentManager, AgentStatus};
 use crate::git_utils::{detect_github_repo, get_commit_log, get_worker_commits};
@@ -64,6 +64,12 @@ pub struct App {
     pub theme_picker_index: usize,
     /// Branch name for build confirmation after merge
     pub pending_build_branch: Option<String>,
+    /// Task completion state
+    pub task_complete_state: Option<TaskCompleteState>,
+    /// BuildWorker agent index (None if not spawned)
+    pub build_worker_index: Option<usize>,
+    /// Branch name associated with the current build worker
+    pub build_worker_branch: Option<String>,
 }
 
 impl App {
@@ -104,6 +110,9 @@ impl App {
             show_theme_picker: false,
             theme_picker_index: 0,
             pending_build_branch: None,
+            task_complete_state: None,
+            build_worker_index: None,
+            build_worker_branch: None,
         }
     }
 
@@ -379,10 +388,20 @@ impl App {
             return;
         };
 
+        // Close the worker agent (the implementation tab disappears)
+        if review.agent_index != usize::MAX {
+            self.agent_manager.close(review.agent_index);
+            if review.agent_index < self.agent_issues.len() {
+                self.agent_issues.remove(review.agent_index);
+            }
+            if review.agent_index < self.agent_worktrees.len() {
+                self.agent_worktrees.remove(review.agent_index);
+            }
+        }
+
         let task = MergeTask {
             branch: review.branch.clone(),
             worktree_path: review.worktree_path.clone(),
-            agent_index: review.agent_index,
             task_id: self.pending_review_task_id.take(),
         };
 
@@ -542,16 +561,7 @@ impl App {
             let _ = wt_manager.remove(&task.worktree_path);
         }
 
-        // Close the original worker agent (if associated)
-        if task.agent_index != usize::MAX {
-            self.agent_manager.close(task.agent_index);
-            if task.agent_index < self.agent_issues.len() {
-                self.agent_issues.remove(task.agent_index);
-            }
-            if task.agent_index < self.agent_worktrees.len() {
-                self.agent_worktrees.remove(task.agent_index);
-            }
-        }
+        // Note: Worker agent is already closed in enqueue_merge()
 
         // Mark task as completed
         if let Some(ref task_id) = task.task_id {
@@ -586,7 +596,7 @@ impl App {
     }
 
     /// Spawn BuildWorker to run cargo build after merge
-    pub fn spawn_build_worker(&mut self) {
+    pub fn spawn_build_worker(&mut self, branch: String) {
         let repo_path = match env::current_dir() {
             Ok(p) => p,
             Err(e) => {
@@ -594,6 +604,8 @@ impl App {
                     format!("Failed to get current directory: {e}"),
                     cctakt::plan::NotifyLevel::Error,
                 );
+                // Show task complete without build
+                self.show_task_complete(branch, false, None);
                 return;
             }
         };
@@ -613,6 +625,9 @@ impl App {
             Some(15), // max_turns: enough for build fixes
         ) {
             Ok(agent_id) => {
+                let agent_index = self.agent_manager.len() - 1;
+                self.build_worker_index = Some(agent_index);
+                self.build_worker_branch = Some(branch);
                 self.add_notification(
                     format!("BuildWorker started (agent {})", agent_id),
                     cctakt::plan::NotifyLevel::Info,
@@ -623,13 +638,70 @@ impl App {
                     format!("Failed to start BuildWorker: {e}"),
                     cctakt::plan::NotifyLevel::Error,
                 );
+                // Show task complete without build
+                self.show_task_complete(branch, false, None);
             }
         }
+    }
+
+    /// Check BuildWorker completion and transition to TaskComplete mode
+    pub fn check_build_worker_completion(&mut self) {
+        let Some(worker_idx) = self.build_worker_index else {
+            return;
+        };
+
+        let Some(agent) = self.agent_manager.get(worker_idx) else {
+            return;
+        };
+
+        if agent.status != AgentStatus::Ended {
+            return;
+        }
+
+        // Check if build succeeded (by error presence)
+        let build_success = agent.error.is_none();
+
+        // Get the branch name
+        let branch = self.build_worker_branch.take().unwrap_or_else(|| "unknown".to_string());
+
+        // Close BuildWorker agent
+        self.agent_manager.close(worker_idx);
+        self.build_worker_index = None;
+
+        // Show task completion screen
+        self.show_task_complete(branch, true, Some(build_success));
     }
 
     /// Cancel review and return to normal mode
     pub fn cancel_review(&mut self) {
         self.review_state = None;
+        self.mode = AppMode::Normal;
+    }
+
+    /// Show task completion screen
+    pub fn show_task_complete(&mut self, branch: String, build_run: bool, build_success: Option<bool>) {
+        let message = if build_run {
+            if build_success == Some(true) {
+                format!("タスク完了: {} をマージし、ビルドが成功しました", branch)
+            } else {
+                format!("タスク完了: {} をマージしましたが、ビルドに失敗しました", branch)
+            }
+        } else {
+            format!("タスク完了: {} をマージしました", branch)
+        };
+
+        self.task_complete_state = Some(TaskCompleteState {
+            branch,
+            build_run,
+            build_success,
+            message,
+        });
+        self.mode = AppMode::TaskComplete;
+    }
+
+    /// Close task completion screen and return to normal mode
+    pub fn close_task_complete(&mut self) {
+        self.task_complete_state = None;
         self.mode = AppMode::Normal;
     }
 
