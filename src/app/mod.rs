@@ -710,13 +710,18 @@ impl App {
         if self.plan_manager.has_changes() {
             match self.plan_manager.load() {
                 Ok(Some(plan)) => {
-                    if let Some(desc) = &plan.description {
-                        self.add_notification(
-                            format!("Plan loaded: {desc}"),
-                            cctakt::plan::NotifyLevel::Info,
-                        );
+                    // 完了済みプランはクリア（通知なし）
+                    if plan.is_complete() {
+                        self.current_plan = None;
+                    } else {
+                        if let Some(desc) = &plan.description {
+                            self.add_notification(
+                                format!("Plan loaded: {desc}"),
+                                cctakt::plan::NotifyLevel::Info,
+                            );
+                        }
+                        self.current_plan = Some(plan);
                     }
-                    self.current_plan = Some(plan);
                 }
                 Ok(None) => {
                     self.current_plan = None;
