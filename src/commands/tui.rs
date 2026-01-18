@@ -141,6 +141,13 @@ pub fn run_tui() -> Result<()> {
                                         state.diff_view.scroll_to_bottom();
                                     }
                                 }
+                                // Pane navigation with h/l
+                                KeyCode::Char('h') => {
+                                    app.focused_pane = FocusedPane::Left;
+                                }
+                                KeyCode::Char('l') => {
+                                    app.focused_pane = FocusedPane::Right;
+                                }
                                 _ => {}
                             }
                         }
