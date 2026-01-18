@@ -16,6 +16,12 @@ cctakt は、複数の Claude Code エージェントを Git Worktree で管理�
 - **プラン機能**: `.cctakt/plan.json` を通じた構造化タスク管理
 - **テーマ**: 6種類のカラーテーマ（Cyberpunk, Monokai, Dracula, Nord, Arctic Aurora, Minimal）
 
+## 必要条件
+
+- Rust 2024 Edition
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) がインストールされていること
+- Git
+
 ## インストール
 
 ```bash
@@ -33,10 +39,10 @@ cargo install --path .
 ## 使い方
 
 ```bash
-# TUI を起動
+# TUI を起動（引数なし）
 cctakt
 
-# プロジェクトを初期化
+# プロジェクトを初期化（.cctakt.toml を生成）
 cctakt init
 
 # 環境設定を確認
@@ -45,7 +51,10 @@ cctakt status
 # GitHub Issues を一覧表示
 cctakt issues
 
-# プランを実行（CLI モード）
+# GitHub Issues をラベルでフィルタ
+cctakt issues --labels "bug,enhancement"
+
+# プランを実行（CLI モード、TUI なし）
 cctakt run .cctakt/plan.json
 ```
 
@@ -67,8 +76,8 @@ cctakt run .cctakt/plan.json
 
 | キー | 説明 |
 |------|------|
-| `h` | 左ペインへ移動 |
-| `l` | 右ペインへ移動 |
+| `h` | 左ペインへ移動（指揮者） |
+| `l` | 右ペインへ移動（ワーカー） |
 | `j` | 次のワーカーへ（右ペイン時） |
 | `k` | 前のワーカーへ（右ペイン時） |
 | `i` / `Enter` | 入力モードへ切り替え |
@@ -93,6 +102,15 @@ cctakt run .cctakt/plan.json
 | `m` / `Enter` | マージを実行 |
 | `Esc` / `q` | レビューをキャンセル |
 
+### テーマピッカー
+
+| キー | 説明 |
+|------|------|
+| `j` / `↓` | 次のテーマへ |
+| `k` / `↑` | 前のテーマへ |
+| `Enter` | テーマを適用 |
+| `q` | キャンセル |
+
 ## 指揮者モードと plan.json
 
 cctakt は「指揮者モード」をサポートしています。メインリポジトリで Claude Code を起動し、`.cctakt/plan.json` にプランを書き込むことで、cctakt がワーカーを自動的に生成・管理します。
@@ -102,6 +120,7 @@ cctakt は「指揮者モード」をサポートしています。メインリ�
 ```json
 {
   "version": 1,
+  "created_at": 1700000000,
   "description": "タスクの説明",
   "tasks": [
     {
@@ -109,7 +128,8 @@ cctakt は「指揮者モード」をサポートしています。メインリ�
       "action": {
         "type": "create_worker",
         "branch": "feat/example",
-        "task_description": "実装内容の詳細"
+        "task_description": "実装内容の詳細",
+        "base_branch": "main"
       },
       "status": "pending"
     },
@@ -128,40 +148,57 @@ cctakt は「指揮者モード」をサポートしています。メインリ�
 
 ### サポートされるアクション
 
-| タイプ | 説明 |
-|--------|------|
-| `create_worker` | Worktree を作成し、ワーカーエージェントを起動 |
-| `create_pr` | プルリクエストを作成 |
-| `merge_branch` | ブランチをマージ |
-| `cleanup_worktree` | Worktree を削除 |
-| `run_command` | コマンドを実行 |
-| `notify` | 通知メッセージを表示 |
-| `request_review` | レビューモードを開始 |
+| タイプ | 説明 | 必須フィールド | オプション |
+|--------|------|---------------|-----------|
+| `create_worker` | Worktree を作成し、ワーカーエージェントを起動 | `branch`, `task_description` | `base_branch` |
+| `create_pr` | プルリクエストを作成 | `branch`, `title` | `body`, `base`, `draft` |
+| `merge_branch` | ブランチをマージ | `branch` | `target` |
+| `cleanup_worktree` | Worktree を削除 | `worktree` | - |
+| `run_command` | コマンドを実行 | `worktree`, `command` | - |
+| `notify` | 通知メッセージを表示 | `message` | `level` (info/warning/error/success) |
+| `request_review` | レビューモードを開始 | `branch` | `after_task` |
 
 ### タスクステータス
 
-- `pending`: 実行待ち
-- `running`: 実行中
-- `completed`: 完了
-- `failed`: 失敗
-- `skipped`: スキップ
+| ステータス | 説明 |
+|-----------|------|
+| `pending` | 実行待ち |
+| `running` | 実行中 |
+| `completed` | 完了 |
+| `failed` | 失敗 |
+| `skipped` | スキップ |
+
+### タスク結果
+
+タスク完了時には `result` フィールドが設定されます：
+
+```json
+{
+  "result": {
+    "commits": ["abc1234 feat: add feature"],
+    "pr_number": 42,
+    "pr_url": "https://github.com/owner/repo/pull/42"
+  }
+}
+```
 
 ## 設定ファイル
 
-プロジェクトルートに `.cctakt.toml` を配置して設定をカスタマイズできます。
+プロジェクトルートに `.cctakt.toml` を配置して設定をカスタマイズできます。`cctakt init` コマンドでデフォルト設定ファイルを生成できます。
 
 ```toml
-# Worktree の保存先
+# Worktree の保存先（デフォルト: .worktrees）
 worktree_dir = ".worktrees"
 
-# ブランチ名のプレフィックス
+# ブランチ名のプレフィックス（デフォルト: cctakt）
 branch_prefix = "cctakt"
 
 # カラーテーマ: cyberpunk, monokai, dracula, nord, arctic, minimal
+# デフォルト: cyberpunk
 theme = "cyberpunk"
 
 [github]
-# Issue を自動取得するか
+# Issue を自動取得するか（デフォルト: false）
 auto_fetch_issues = false
 # リポジトリ（owner/repo 形式）
 repository = "owner/repo"
@@ -171,14 +208,15 @@ labels = ["cctakt", "good first issue"]
 [anthropic]
 # Anthropic API キー（環境変数 ANTHROPIC_API_KEY でも設定可能）
 # api_key = "sk-ant-..."
-# 使用するモデル
+# 使用するモデル（デフォルト: claude-sonnet-4-20250514）
 model = "claude-sonnet-4-20250514"
-# 最大トークン数
+# 最大トークン数（デフォルト: 1024）
 max_tokens = 1024
-# PR 説明を自動生成するか
+# PR 説明を自動生成するか（デフォルト: true）
 auto_generate_pr_description = true
 
 [keybindings]
+# デフォルト値を記載
 new_agent = "ctrl+t"
 close_agent = "ctrl+w"
 next_tab = "tab"
@@ -186,16 +224,19 @@ prev_tab = "shift+tab"
 quit = "ctrl+q"
 ```
 
+すべての設定項目はオプションです。指定しない項目はデフォルト値が使用されます。
+
 ## Tech Stack
 
 | カテゴリ | 技術 |
 |----------|------|
 | 言語 | Rust (Edition 2024) |
-| TUI | [ratatui](https://github.com/ratatui-org/ratatui) |
+| TUI | [ratatui](https://github.com/ratatui-org/ratatui) 0.29 |
 | ターミナル | [portable-pty](https://github.com/wez/wezterm/tree/main/pty) + [vt100](https://crates.io/crates/vt100) |
-| CLI | [clap](https://github.com/clap-rs/clap) |
-| HTTP | [ureq](https://github.com/algesten/ureq) |
+| CLI | [clap](https://github.com/clap-rs/clap) 4.x |
+| HTTP | [ureq](https://github.com/algesten/ureq) (GitHub API / Anthropic API) |
 | 設定 | [toml](https://crates.io/crates/toml) + [serde](https://serde.rs/) |
+| イベント | [crossterm](https://github.com/crossterm-rs/crossterm) |
 
 ## アーキテクチャ
 
@@ -207,6 +248,19 @@ cctakt (TUI)
 └── Worker Claude Code (各 Worktree)
     └── 実際のタスク実行
 ```
+
+### モジュール構成
+
+| モジュール | 説明 |
+|-----------|------|
+| `src/plan.rs` | プラン管理（指揮者 ↔ cctakt 通信） |
+| `src/worktree.rs` | Git Worktree 管理 |
+| `src/agent.rs` | PTY エージェント管理 |
+| `src/github.rs` | GitHub API (Issues, PR) |
+| `src/anthropic.rs` | Anthropic API（PR 本文生成） |
+| `src/theme.rs` | カラーテーマ定義 |
+| `src/config.rs` | 設定ファイル管理 |
+| `src/tui/` | TUI レンダリング・入力処理 |
 
 ## ライセンス
 
