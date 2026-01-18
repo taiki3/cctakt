@@ -36,4 +36,6 @@ pub enum Commands {
         #[arg(default_value = ".cctakt/plan.json")]
         plan: PathBuf,
     },
+    /// Run as MCP server (for orchestrator integration)
+    Mcp,
 }

@@ -25,14 +25,14 @@ cctakt は、複数の Claude Code エージェントを Git Worktree で管理�
 ## インストール
 
 ```bash
-# リポジトリをクローン
-git clone https://github.com/your-username/cctakt.git
+cargo install cctakt
+```
+
+### ソースからビルド
+
+```bash
+git clone https://github.com/yoshinaka-digion/cctakt.git
 cd cctakt
-
-# ビルド
-cargo build --release
-
-# インストール（オプション）
 cargo install --path .
 ```
 
@@ -182,6 +182,56 @@ cctakt は「指揮者モード」をサポートしています。メインリ�
 }
 ```
 
+## MCP サーバー連携
+
+cctakt は [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) サーバーとしても動作し、指揮者 Claude Code が直接 `plan.json` を操作する代わりに、cctakt 経由でタスクを管理できます。これにより、ファイル競合やレースコンディションを回避できます。
+
+### セットアップ
+
+`cctakt init` を実行すると、`.claude/settings.json` に MCP サーバー設定が自動的に追加されます：
+
+```json
+{
+  "mcpServers": {
+    "cctakt": {
+      "command": "/path/to/cctakt",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### 利用可能なツール
+
+| ツール | 説明 |
+|--------|------|
+| `add_task` | 新しいワーカータスクを追加（プランがなければ自動作成） |
+| `list_tasks` | 現在のプラン内の全タスクを一覧表示 |
+| `get_task` | 特定タスクの詳細を取得 |
+| `get_plan_status` | プラン全体のステータス（タスク数、完了数など）を取得 |
+
+### add_task パラメータ
+
+| パラメータ | 必須 | 説明 |
+|-----------|------|------|
+| `id` | ○ | ユニークなタスクID（例: `feat-login`, `fix-bug-123`） |
+| `branch` | ○ | Git ブランチ名（例: `feat/login`, `fix/bug-123`） |
+| `description` | ○ | ワーカーへの詳細なタスク説明 |
+| `plan_description` | - | プラン全体の説明（新規プラン作成時のみ使用） |
+
+### 指揮者からの使用例
+
+指揮者 Claude Code は MCP ツールを使って以下のようにタスクを追加できます：
+
+```
+add_task を使用:
+- id: "impl-auth"
+- branch: "feat/auth"
+- description: "ログイン機能を実装してください。..."
+```
+
+タスクが追加されると、cctakt が自動的に検知してワーカーを起動します。
+
 ## 設定ファイル
 
 プロジェクトルートに `.cctakt.toml` を配置して設定をカスタマイズできます。`cctakt init` コマンドでデフォルト設定ファイルを生成できます。
@@ -258,10 +308,11 @@ cctakt (TUI)
 | `src/agent.rs` | PTY エージェント管理 |
 | `src/github.rs` | GitHub API (Issues, PR) |
 | `src/anthropic.rs` | Anthropic API（PR 本文生成） |
+| `src/mcp.rs` | MCP サーバー（指揮者からのツール呼び出し） |
 | `src/theme.rs` | カラーテーマ定義 |
 | `src/config.rs` | 設定ファイル管理 |
 | `src/tui/` | TUI レンダリング・入力処理 |
 
 ## ライセンス
 
-MIT
+GPL-3.0

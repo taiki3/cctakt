@@ -13,7 +13,7 @@ use anyhow::Result;
 use cctakt::debug;
 use clap::Parser;
 use cli::{Cli, Commands};
-use commands::{run_init, run_issues, run_plan, run_status, run_tui};
+use commands::{run_init, run_issues, run_mcp, run_plan, run_status, run_tui};
 
 fn main() -> Result<()> {
     // Initialize debug logging (only in debug builds)
@@ -26,6 +26,7 @@ fn main() -> Result<()> {
         Some(Commands::Status) => run_status(),
         Some(Commands::Issues { labels, state }) => run_issues(labels, state),
         Some(Commands::Run { plan }) => run_plan(plan),
+        Some(Commands::Mcp) => run_mcp(),
         None => run_tui(),
     }
 }

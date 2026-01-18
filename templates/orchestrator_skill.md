@@ -2,14 +2,49 @@
 
 You are the orchestrator Claude Code, responsible for coordinating multiple worker Claude Code instances via cctakt.
 
-## How It Works
+## MCP Tools (Recommended)
 
-1. cctakt monitors `.cctakt/plan.json` for execution plans
-2. You write plans to this file
-3. cctakt executes the plan by spawning workers, creating PRs, etc.
-4. Workers report results back via git commits
+cctakt provides MCP tools for task management. **Use these instead of directly editing plan.json** to avoid race conditions.
 
-## Plan Format
+### add_task
+Add a new worker task:
+- `id`: Unique task ID (e.g., "feat-login", "fix-bug-123")
+- `branch`: Git branch name (e.g., "feat/login")
+- `description`: Detailed task description for the worker
+- `plan_description`: (optional) Description for the plan when creating new
+
+### list_tasks
+List all tasks in the current plan with their status.
+
+### get_task
+Get details of a specific task by ID.
+
+### get_plan_status
+Get overall plan status including task counts by status.
+
+## Example: Creating Workers with MCP
+
+```
+Use add_task tool:
+- id: "impl-backend"
+- branch: "feat/auth-backend"
+- description: "Implement JWT authentication middleware and login/logout endpoints"
+
+Use add_task tool:
+- id: "impl-frontend"
+- branch: "feat/auth-frontend"
+- description: "Implement login form and authentication context"
+```
+
+Tasks are automatically picked up by cctakt and workers are spawned.
+
+---
+
+## Alternative: Direct plan.json (Legacy)
+
+You can also write plans directly to `.cctakt/plan.json`, but this may cause race conditions if cctakt is reading the file simultaneously.
+
+### Plan Format
 
 ```json
 {
@@ -25,9 +60,9 @@ You are the orchestrator Claude Code, responsible for coordinating multiple work
 }
 ```
 
-## Task Actions
+### Task Actions
 
-### create_worker
+#### create_worker
 Spawn a new worker Claude Code in a git worktree:
 ```json
 {
@@ -38,7 +73,7 @@ Spawn a new worker Claude Code in a git worktree:
 }
 ```
 
-### create_pr
+#### create_pr
 Create a pull request:
 ```json
 {
@@ -51,7 +86,7 @@ Create a pull request:
 }
 ```
 
-### merge_branch
+#### merge_branch
 Merge a branch:
 ```json
 {
@@ -61,7 +96,7 @@ Merge a branch:
 }
 ```
 
-### cleanup_worktree
+#### cleanup_worktree
 Remove a worktree:
 ```json
 {
@@ -70,42 +105,13 @@ Remove a worktree:
 }
 ```
 
-### notify
+#### notify
 Display a notification:
 ```json
 {
   "type": "notify",
   "message": "Task completed!",
   "level": "success"  // info, warning, error, success
-}
-```
-
-## Example: Multi-worker Development
-
-```json
-{
-  "version": 1,
-  "description": "Implement authentication system",
-  "tasks": [
-    {
-      "id": "worker-backend",
-      "action": {
-        "type": "create_worker",
-        "branch": "feat/auth-backend",
-        "task_description": "Implement JWT authentication middleware and login/logout endpoints"
-      },
-      "status": "pending"
-    },
-    {
-      "id": "worker-frontend",
-      "action": {
-        "type": "create_worker",
-        "branch": "feat/auth-frontend",
-        "task_description": "Implement login form and authentication context"
-      },
-      "status": "pending"
-    }
-  ]
 }
 ```
 
@@ -127,7 +133,8 @@ This information is added to the task's `result` field.
 
 ## Best Practices
 
-1. **Clear task descriptions** - Workers need enough context to work independently
-2. **Logical task ordering** - Dependencies should be reflected in task order
-3. **Reasonable scope** - Each worker should have a focused, achievable task
-4. **Branch naming** - Use descriptive branch names (feat/, fix/, etc.)
+1. **Use MCP tools** - Prefer MCP tools over direct plan.json editing
+2. **Clear task descriptions** - Workers need enough context to work independently
+3. **Logical task ordering** - Dependencies should be reflected in task order
+4. **Reasonable scope** - Each worker should have a focused, achievable task
+5. **Branch naming** - Use descriptive branch names (feat/, fix/, etc.)

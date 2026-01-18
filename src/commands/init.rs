@@ -107,19 +107,77 @@ pub fn run_init(force: bool) -> Result<()> {
         println!("✅ Updated .gitignore with cctakt entries");
     }
 
+    // 7. Setup MCP server in .claude/settings.json
+    setup_mcp_server(&claude_dir, force)?;
+
     println!("\n---\n");
 
-    // 7. Check GitHub token
+    // 8. Check GitHub token
     check_github_token();
 
-    // 8. Check claude CLI
+    // 9. Check claude CLI
     check_claude_cli();
 
     println!("\n🎉 cctakt initialization complete!");
-    println!("\nNext steps:");
-    println!("  1. Run 'cctakt' to start the TUI");
-    println!("  2. Press 'i' to select an issue");
-    println!("  3. The orchestrator Claude Code can use /orchestrator skill");
+    println!("\n利用可能な機能:");
+    println!("  • MCP ツール: add_task, list_tasks, get_task, get_plan_status");
+    println!("  • スキル: /orchestrator");
+    println!("\n使い方:");
+    println!("  1. 'cctakt' で TUI を起動");
+    println!("  2. 指揮者ペインで Claude Code が MCP ツールまたは /orchestrator でワーカーを作成");
+    println!("  3. ワーカー完了後、レビュー画面でマージ判断");
+
+    Ok(())
+}
+
+/// Setup MCP server configuration in .claude/settings.json
+fn setup_mcp_server(claude_dir: &PathBuf, force: bool) -> Result<()> {
+    let settings_path = claude_dir.join("settings.json");
+
+    // Read existing settings or create new
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let content = fs::read_to_string(&settings_path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Check if cctakt MCP server is already configured
+    let has_cctakt = settings
+        .get("mcpServers")
+        .and_then(|s| s.get("cctakt"))
+        .is_some();
+
+    if has_cctakt && !force {
+        println!("📄 MCP server already configured (use --force to overwrite)");
+        return Ok(());
+    }
+
+    // Get cctakt binary path
+    let cctakt_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "cctakt".to_string());
+
+    // Add or update cctakt MCP server config
+    let mcp_servers = settings
+        .as_object_mut()
+        .unwrap()
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
+
+    mcp_servers.as_object_mut().unwrap().insert(
+        "cctakt".to_string(),
+        serde_json::json!({
+            "command": cctakt_path,
+            "args": ["mcp"]
+        }),
+    );
+
+    // Write settings
+    let content = serde_json::to_string_pretty(&settings)?;
+    fs::write(&settings_path, content)?;
+    println!("✅ Configured MCP server in .claude/settings.json");
 
     Ok(())
 }
