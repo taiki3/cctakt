@@ -287,6 +287,8 @@ impl App {
         if index < self.agent_worktrees.len() {
             self.agent_worktrees.remove(index);
         }
+        // Update PTY sizes after closing (e.g., restore full width)
+        self.update_agent_sizes();
     }
 
     /// Check all agents for completion and auto-transition to review mode
@@ -400,6 +402,8 @@ impl App {
             if review.agent_index < self.agent_worktrees.len() {
                 self.agent_worktrees.remove(review.agent_index);
             }
+            // Update PTY sizes after closing worker
+            self.update_agent_sizes();
         }
 
         let task = MergeTask {
@@ -549,6 +553,8 @@ impl App {
         // Close MergeWorker agent
         self.agent_manager.close(worker_idx);
         self.merge_queue.worker_agent_index = None;
+        // Update PTY sizes after closing worker
+        self.update_agent_sizes();
 
         // Process next task
         self.process_merge_queue();
@@ -674,6 +680,8 @@ impl App {
         // Close BuildWorker agent
         self.agent_manager.close(worker_idx);
         self.build_worker_index = None;
+        // Update PTY sizes after closing worker
+        self.update_agent_sizes();
 
         // Show task completion screen
         self.show_task_complete(branch, true, Some(build_success));
