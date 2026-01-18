@@ -1253,4 +1253,9 @@ impl App {
             self.agent_manager.resize_all(self.content_cols, self.content_rows);
         }
     }
+
+    /// Restart the conductor (orchestrator) agent
+    pub fn restart_conductor(&mut self) -> Result<()> {
+        self.agent_manager.restart_interactive(self.content_rows, self.content_cols)
+    }
 }
