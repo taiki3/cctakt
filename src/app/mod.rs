@@ -143,7 +143,7 @@ impl App {
     /// Open theme picker
     pub fn open_theme_picker(&mut self) {
         // Set index to current theme
-        let current = current_theme_id();
+        let current = current_theme_id().id();
         let themes = available_themes();
         self.theme_picker_index = themes
             .iter()
