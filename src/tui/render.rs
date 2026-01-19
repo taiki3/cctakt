@@ -444,6 +444,36 @@ pub fn render_footer(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 t.style_text_muted()
             },
         ));
+
+        // Calculate total cost and turns from non-interactive agents
+        let (total_cost, total_turns) = agents
+            .iter()
+            .filter(|a| a.mode == AgentMode::NonInteractive)
+            .fold((0.0, 0u32), |(cost, turns), agent| {
+                (
+                    cost + agent.cost_usd.unwrap_or(0.0),
+                    turns + agent.num_turns.unwrap_or(0),
+                )
+            });
+
+        // Display usage info if there's any cost or turns
+        if total_cost > 0.0 || total_turns > 0 {
+            left_spans.push(Span::styled(" | ", t.style_text_muted()));
+            left_spans.push(Span::styled(
+                if total_cost < 0.01 {
+                    "<$0.01".to_string()
+                } else {
+                    format!("${:.2}", total_cost)
+                },
+                Style::default().fg(t.neon_yellow()),
+            ));
+            if total_turns > 0 {
+                left_spans.push(Span::styled(
+                    format!(" ({} turns)", total_turns),
+                    t.style_text_muted(),
+                ));
+            }
+        }
     }
 
     // Add input mode indicator

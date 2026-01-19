@@ -157,6 +157,12 @@ pub struct StreamParser {
     pub error: Option<String>,
     /// Final result text
     pub result: Option<String>,
+    /// Total cost in USD (from result event)
+    pub cost_usd: Option<f64>,
+    /// Total duration in milliseconds (from result event)
+    pub duration_ms: Option<u64>,
+    /// Number of turns (from result event)
+    pub num_turns: Option<u32>,
 }
 
 impl StreamParser {
@@ -183,17 +189,26 @@ impl StreamParser {
                     StreamEvent::System { session_id: Some(id), .. } => {
                         self.session_id = Some(id.clone());
                     }
-                    StreamEvent::Result { result, is_error: Some(true), .. } => {
+                    StreamEvent::Result { result, cost_usd, duration_ms, num_turns, is_error: Some(true), .. } => {
                         self.completed = true;
                         self.error = result.clone();
+                        self.cost_usd = *cost_usd;
+                        self.duration_ms = *duration_ms;
+                        self.num_turns = *num_turns;
                     }
-                    StreamEvent::Result { result, subtype, .. } if subtype == "success" => {
+                    StreamEvent::Result { result, cost_usd, duration_ms, num_turns, subtype, .. } if subtype == "success" => {
                         self.completed = true;
                         self.result = result.clone();
+                        self.cost_usd = *cost_usd;
+                        self.duration_ms = *duration_ms;
+                        self.num_turns = *num_turns;
                     }
-                    StreamEvent::Result { result, subtype, .. } if subtype == "error" => {
+                    StreamEvent::Result { result, cost_usd, duration_ms, num_turns, subtype, .. } if subtype == "error" => {
                         self.completed = true;
                         self.error = result.clone();
+                        self.cost_usd = *cost_usd;
+                        self.duration_ms = *duration_ms;
+                        self.num_turns = *num_turns;
                     }
                     _ => {}
                 }

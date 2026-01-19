@@ -78,6 +78,12 @@ pub struct Agent {
     pub error: Option<String>,
     /// Result text if completed (non-interactive only)
     pub result: Option<String>,
+    /// Total cost in USD (non-interactive only)
+    pub cost_usd: Option<f64>,
+    /// Total duration in milliseconds (non-interactive only)
+    pub duration_ms: Option<u64>,
+    /// Number of turns (non-interactive only)
+    pub num_turns: Option<u32>,
     /// Interactive state (PTY)
     interactive: Option<InteractiveState>,
     /// Non-interactive state (stream-json)
@@ -160,6 +166,9 @@ impl Agent {
             branch: None,
             error: None,
             result: None,
+            cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
             interactive: Some(InteractiveState {
                 parser,
                 pty_writer,
@@ -248,6 +257,9 @@ impl Agent {
             branch,
             error: None,
             result: None,
+            cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
             interactive: None,
             non_interactive: Some(NonInteractiveState {
                 parser,
@@ -397,6 +409,10 @@ impl Agent {
             AgentMode::NonInteractive => {
                 if let Some(ref state) = self.non_interactive {
                     if let Ok(p) = state.parser.lock() {
+                        // Always sync cost info (even before completion)
+                        self.cost_usd = p.cost_usd;
+                        self.duration_ms = p.duration_ms;
+                        self.num_turns = p.num_turns;
                         if p.completed {
                             self.work_state = WorkState::Completed;
                             self.result = p.result.clone();
