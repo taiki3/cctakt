@@ -1,7 +1,7 @@
 //! TUI command implementation
 
 use crate::agent::{AgentStatus, WorkState};
-use crate::app::{App, AppMode, FocusedPane, InputMode};
+use crate::app::{App, AppMode, FocusedPane, InputMode, ReviewFocus};
 use crate::tui::{handle_command_mode, handle_keybinding, handle_navigation_mode, handle_theme_picker_input, ui};
 use anyhow::{Context, Result};
 use cctakt::{create_theme, debug, set_theme, Config, IssuePickerResult, LockFile};
@@ -98,50 +98,124 @@ pub fn run_tui() -> Result<()> {
                     ));
                     match app.mode {
                         AppMode::ReviewMerge => {
-                            // Handle review mode input
+                            // Handle review mode input with split pane
                             match key.code {
-                                KeyCode::Enter | KeyCode::Char('m') | KeyCode::Char('M') => {
+                                KeyCode::Char('m') | KeyCode::Char('M') => {
                                     // Enqueue merge (handled by MergeWorker)
                                     app.enqueue_merge();
                                 }
                                 KeyCode::Char('q')
                                 | KeyCode::Char('Q')
                                 | KeyCode::Char('c')
-                                | KeyCode::Char('C') => {
-                                    // Cancel review (q to quit, c to cancel)
+                                | KeyCode::Char('C')
+                                | KeyCode::Esc => {
+                                    // Cancel review
                                     app.cancel_review();
                                 }
-                                KeyCode::Up | KeyCode::Char('k') => {
+                                // Focus switching with i or Enter
+                                KeyCode::Char('i') | KeyCode::Enter => {
                                     if let Some(ref mut state) = app.review_state {
-                                        state.diff_view.scroll_up(1);
+                                        state.focus = match state.focus {
+                                            ReviewFocus::Summary => ReviewFocus::Diff,
+                                            ReviewFocus::Diff => ReviewFocus::Summary,
+                                        };
                                     }
                                 }
-                                KeyCode::Down | KeyCode::Char('j') => {
+                                // Scroll focused pane with j/k
+                                KeyCode::Char('k') | KeyCode::Up => {
                                     if let Some(ref mut state) = app.review_state {
-                                        state.diff_view.scroll_down(1);
+                                        match state.focus {
+                                            ReviewFocus::Summary => {
+                                                state.summary_scroll =
+                                                    state.summary_scroll.saturating_sub(1);
+                                            }
+                                            ReviewFocus::Diff => {
+                                                state.diff_view.scroll_up(1);
+                                            }
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('j') | KeyCode::Down => {
+                                    if let Some(ref mut state) = app.review_state {
+                                        match state.focus {
+                                            ReviewFocus::Summary => {
+                                                let max_scroll = state
+                                                    .commit_log
+                                                    .lines()
+                                                    .count()
+                                                    .saturating_sub(1)
+                                                    as u16;
+                                                state.summary_scroll =
+                                                    (state.summary_scroll + 1).min(max_scroll);
+                                            }
+                                            ReviewFocus::Diff => {
+                                                state.diff_view.scroll_down(1);
+                                            }
+                                        }
                                     }
                                 }
                                 KeyCode::PageUp => {
                                     if let Some(ref mut state) = app.review_state {
-                                        state.diff_view.page_up(20);
+                                        match state.focus {
+                                            ReviewFocus::Summary => {
+                                                state.summary_scroll =
+                                                    state.summary_scroll.saturating_sub(10);
+                                            }
+                                            ReviewFocus::Diff => {
+                                                state.diff_view.page_up(20);
+                                            }
+                                        }
                                     }
                                 }
                                 KeyCode::PageDown => {
                                     if let Some(ref mut state) = app.review_state {
-                                        state.diff_view.page_down(20);
+                                        match state.focus {
+                                            ReviewFocus::Summary => {
+                                                let max_scroll = state
+                                                    .commit_log
+                                                    .lines()
+                                                    .count()
+                                                    .saturating_sub(1)
+                                                    as u16;
+                                                state.summary_scroll =
+                                                    (state.summary_scroll + 10).min(max_scroll);
+                                            }
+                                            ReviewFocus::Diff => {
+                                                state.diff_view.page_down(20);
+                                            }
+                                        }
                                     }
                                 }
                                 KeyCode::Home => {
                                     if let Some(ref mut state) = app.review_state {
-                                        state.diff_view.scroll_to_top();
+                                        match state.focus {
+                                            ReviewFocus::Summary => {
+                                                state.summary_scroll = 0;
+                                            }
+                                            ReviewFocus::Diff => {
+                                                state.diff_view.scroll_to_top();
+                                            }
+                                        }
                                     }
                                 }
                                 KeyCode::End => {
                                     if let Some(ref mut state) = app.review_state {
-                                        state.diff_view.scroll_to_bottom();
+                                        match state.focus {
+                                            ReviewFocus::Summary => {
+                                                state.summary_scroll = state
+                                                    .commit_log
+                                                    .lines()
+                                                    .count()
+                                                    .saturating_sub(1)
+                                                    as u16;
+                                            }
+                                            ReviewFocus::Diff => {
+                                                state.diff_view.scroll_to_bottom();
+                                            }
+                                        }
                                     }
                                 }
-                                // Pane navigation with h/l
+                                // Pane navigation with h/l (for orchestrator view)
                                 KeyCode::Char('h') => {
                                     app.focused_pane = FocusedPane::Left;
                                 }

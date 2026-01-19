@@ -33,7 +33,7 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::app::types::{AppMode, MergeQueue, Notification, ReviewState};
+    use crate::app::types::{AppMode, MergeQueue, Notification, ReviewFocus, ReviewState};
     use crate::git_utils::{get_commit_log, get_worker_commits, parse_github_url};
     use cctakt::{
         github::Issue, Config, DiffView, GitHubClient, IssuePicker, IssuePickerResult,
@@ -315,6 +315,8 @@ mod tests {
             insertions: 100,
             deletions: 20,
             conflicts: vec!["src/main.rs".to_string()],
+            focus: ReviewFocus::default(),
+            summary_scroll: 0,
         };
 
         assert_eq!(state.agent_index, 0);
@@ -520,6 +522,8 @@ mod tests {
             insertions: 0,
             deletions: 0,
             conflicts: vec![],
+            focus: ReviewFocus::default(),
+            summary_scroll: 0,
         };
 
         assert!(state.conflicts.is_empty());
@@ -542,6 +546,8 @@ mod tests {
                 "file2.rs".to_string(),
                 "file3.rs".to_string(),
             ],
+            focus: ReviewFocus::default(),
+            summary_scroll: 0,
         };
 
         assert_eq!(state.conflicts.len(), 3);

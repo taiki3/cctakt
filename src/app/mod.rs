@@ -2,7 +2,7 @@
 
 pub mod types;
 
-pub use types::{AppMode, FocusedPane, InputMode, MergeQueue, MergeTask, Notification, ReviewState};
+pub use types::{AppMode, FocusedPane, InputMode, MergeQueue, MergeTask, Notification, ReviewFocus, ReviewState};
 
 use crate::agent::{AgentManager, AgentStatus};
 use crate::git_utils::{detect_github_repo, get_commit_log, get_worker_commits};
@@ -377,6 +377,8 @@ impl App {
             insertions,
             deletions,
             conflicts,
+            focus: ReviewFocus::default(),
+            summary_scroll: 0,
         });
 
         self.mode = AppMode::ReviewMerge;
@@ -932,6 +934,8 @@ impl App {
             insertions,
             deletions,
             conflicts,
+            focus: ReviewFocus::default(),
+            summary_scroll: 0,
         });
 
         self.mode = AppMode::ReviewMerge;
