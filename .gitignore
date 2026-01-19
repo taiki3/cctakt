@@ -2,4 +2,10 @@
 .worktrees/
 
 # cctakt
-.cctakt/plan_*.json
+.cctakt/
+.cctakt.toml
+debug.log
+
+# claude local settings
+.claude/settings.json
+.claude/settings.local.json
