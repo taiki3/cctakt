@@ -49,19 +49,19 @@ cctakt        # TUI 起動
 
 ```mermaid
 sequenceDiagram
-    participant User as ユーザー
-    participant Conductor as 指揮者 (左ペイン)
-    participant cctakt as cctakt
-    participant Worker as ワーカー (右ペイン)
+    actor User
+    participant Conductor as 指揮者
+    participant cctakt
+    participant Worker as ワーカー
 
     User->>Conductor: タスクを依頼
-    Conductor->>cctakt: add_task (MCP)
-    cctakt->>Worker: Worktree作成 & 起動
-    Worker->>Worker: 実装 & コミット
-    Worker-->>cctakt: 完了通知
-    cctakt->>User: レビュー画面表示
-    User->>cctakt: Enter でマージ承認
-    cctakt->>cctakt: main にマージ
+    Conductor->>cctakt: add_task
+    cctakt->>Worker: Worktree作成・起動
+    Worker->>Worker: 実装・コミット
+    Worker-->>cctakt: 完了
+    cctakt->>User: レビュー画面
+    User->>cctakt: マージ承認
+    cctakt->>cctakt: mainにマージ
 ```
 
 ### 1. 指揮者に指示を出す
