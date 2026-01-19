@@ -18,7 +18,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(1), // Header with tabs
             Constraint::Min(0),    // Main area
-            Constraint::Length(1), // Footer with status
+            Constraint::Length(2), // Footer with status and keymaps
         ])
         .split(f.area());
 
@@ -469,7 +469,7 @@ pub fn render_footer(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     };
     left_spans.push(Span::styled(pane_text, t.style_text_muted()));
 
-    // Build right side: plan status (if any) and key bindings
+    // Build right side: plan status (if any)
     let mut right_spans: Vec<Span> = vec![];
 
     // Plan status
@@ -491,28 +491,30 @@ pub fn render_footer(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let _ = pending;
     }
 
-    // Key bindings
-    right_spans.push(Span::styled(
-        "[^T:new ^I:issue ^W:close ^N/^P:switch ^Q:quit] ",
-        t.style_text_muted(),
-    ));
-
-    // Calculate widths for left/right alignment
+    // Calculate widths for left/right alignment (line 1: status)
     let left_text: String = left_spans.iter().map(|s| s.content.as_ref()).collect();
     let right_text: String = right_spans.iter().map(|s| s.content.as_ref()).collect();
     let left_width = left_text.len();
     let right_width = right_text.len();
     let available_width = area.width as usize;
 
-    // Build final line with padding
-    let mut spans = left_spans;
+    // Build line 1 (status) with padding
+    let mut line1_spans = left_spans;
     let padding = available_width.saturating_sub(left_width + right_width);
     if padding > 0 {
-        spans.push(Span::raw(" ".repeat(padding)));
+        line1_spans.push(Span::raw(" ".repeat(padding)));
     }
-    spans.extend(right_spans);
+    line1_spans.extend(right_spans);
+    let line1 = Line::from(line1_spans);
 
-    let footer = Paragraph::new(Line::from(spans)).style(Style::default().bg(t.bg_surface()));
+    // Build line 2 (keymaps)
+    let keymap_spans = vec![Span::styled(
+        " [^T:new ^I:issue ^W:close ^N/^P:switch ^Q:quit]",
+        t.style_text_muted(),
+    )];
+    let line2 = Line::from(keymap_spans);
+
+    let footer = Paragraph::new(vec![line1, line2]).style(Style::default().bg(t.bg_surface()));
     f.render_widget(footer, area);
 }
 
