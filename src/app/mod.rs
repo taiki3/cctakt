@@ -239,7 +239,7 @@ impl App {
 
         let name = format!("#{}", issue.number);
         self.agent_manager
-            .add_non_interactive(name, working_dir, &task_prompt, None)?;
+            .add_non_interactive(name, working_dir, &task_prompt, None, Some(branch_name))?;
 
         self.agent_issues.push(Some(issue));
         self.agent_worktrees.push(worktree_path);
@@ -476,6 +476,7 @@ impl App {
             repo_path,
             &task_description,
             Some(10), // max_turns: enough for conflict resolution
+            Some(branch.to_string()),
         ) {
             Ok(agent_id) => {
                 // Find the agent index (it's the last one added)
@@ -630,6 +631,7 @@ impl App {
             repo_path,
             &task_description,
             Some(15), // max_turns: enough for build fixes
+            Some(branch.clone()),
         ) {
             Ok(agent_id) => {
                 let agent_index = self.agent_manager.len() - 1;
@@ -984,6 +986,7 @@ impl App {
             working_dir,
             &full_prompt,
             None, // No turn limit for plan-based workers
+            Some(branch.to_string()),
         ) {
             Ok(_) => {
                 let agent_index = self.agent_manager.list().len() - 1;
