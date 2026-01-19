@@ -51,11 +51,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     if !app.notifications.is_empty() {
         render_notifications(f, app, f.area());
     }
-
-    // Render plan status if active
-    if app.current_plan.is_some() {
-        render_plan_status(f, app, f.area());
-    }
 }
 
 /// Render notifications at the bottom of the screen
@@ -101,41 +96,6 @@ pub fn render_notifications(f: &mut Frame, app: &App, area: ratatui::layout::Rec
 
     f.render_widget(Clear, notification_area);
     f.render_widget(notification_widget, notification_area);
-}
-
-/// Render plan status indicator
-pub fn render_plan_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let Some(ref plan) = app.current_plan else {
-        return;
-    };
-
-    let (pending, running, completed, failed) = plan.count_by_status();
-    let total = plan.tasks.len();
-
-    let status_text = format!(
-        " Plan: {completed}/{total} ({running} running, {failed} failed) "
-    );
-
-    let status_area = ratatui::layout::Rect {
-        x: area.width.saturating_sub(status_text.len() as u16 + 2),
-        y: 0,
-        width: status_text.len() as u16,
-        height: 1,
-    };
-
-    let t = theme();
-    let style = if failed > 0 {
-        t.style_error()
-    } else if running > 0 {
-        t.style_warning()
-    } else if pending > 0 {
-        t.style_info()
-    } else {
-        t.style_success()
-    };
-
-    let status_widget = Paragraph::new(status_text).style(style);
-    f.render_widget(status_widget, status_area);
 }
 
 /// Render theme picker modal
