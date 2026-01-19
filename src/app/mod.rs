@@ -66,6 +66,8 @@ pub struct App {
     pub build_worker_index: Option<usize>,
     /// Branch name associated with the current build worker
     pub build_worker_branch: Option<String>,
+    /// Command buffer for :command mode
+    pub command_buffer: String,
 }
 
 impl App {
@@ -107,6 +109,7 @@ impl App {
             theme_picker_index: 0,
             build_worker_index: None,
             build_worker_branch: None,
+            command_buffer: String::new(),
         }
     }
 

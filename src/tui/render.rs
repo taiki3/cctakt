@@ -420,10 +420,18 @@ pub fn render_footer(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     // Add input mode indicator
     left_spans.push(Span::styled(" | ", t.style_text_muted()));
     let (mode_text, mode_style) = match app.input_mode {
-        InputMode::Navigation => ("NAV(i:入力)", t.style_warning()),
+        InputMode::Navigation => ("NAV(i:入力 ::cmd)", t.style_warning()),
         InputMode::Input => ("INS(Esc:移動)", t.style_success()),
+        InputMode::Command => {
+            // Show command buffer
+            let cmd_display = format!(":{}▌", app.command_buffer);
+            left_spans.push(Span::styled(cmd_display, t.style_success()));
+            ("", t.style_text_muted()) // Empty since we already added the command
+        }
     };
-    left_spans.push(Span::styled(mode_text, mode_style));
+    if !mode_text.is_empty() {
+        left_spans.push(Span::styled(mode_text, mode_style));
+    }
 
     // Add focused pane indicator
     let pane_text = match app.focused_pane {

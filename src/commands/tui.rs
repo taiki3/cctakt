@@ -2,7 +2,7 @@
 
 use crate::agent::{AgentStatus, WorkState};
 use crate::app::{App, AppMode, FocusedPane, InputMode};
-use crate::tui::{handle_keybinding, handle_navigation_mode, handle_theme_picker_input, ui};
+use crate::tui::{handle_command_mode, handle_keybinding, handle_navigation_mode, handle_theme_picker_input, ui};
 use anyhow::{Context, Result};
 use cctakt::{create_theme, debug, set_theme, Config, IssuePickerResult, LockFile};
 use crossterm::{
@@ -298,6 +298,11 @@ pub fn run_tui() -> Result<()> {
                                                     }
                                                 }
                                             }
+                                        }
+                                        InputMode::Command => {
+                                            // Command mode: handle :q, :quit, etc.
+                                            debug::log("Processing Command mode key");
+                                            handle_command_mode(&mut app, key.code);
                                         }
                                     }
                                 }

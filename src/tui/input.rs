@@ -133,6 +133,57 @@ pub fn handle_navigation_mode(app: &mut App, code: KeyCode) {
             // Switch to input mode
             app.input_mode = InputMode::Input;
         }
+        KeyCode::Char(':') => {
+            // Enter command mode
+            app.command_buffer.clear();
+            app.input_mode = InputMode::Command;
+        }
+        _ => {}
+    }
+}
+
+/// Handle command mode input (:q, :quit, etc.)
+pub fn handle_command_mode(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            // Cancel command mode
+            app.command_buffer.clear();
+            app.input_mode = InputMode::Navigation;
+        }
+        KeyCode::Enter => {
+            // Execute command
+            let cmd = app.command_buffer.trim().to_lowercase();
+            match cmd.as_str() {
+                "q" | "quit" | "exit" => {
+                    app.should_quit = true;
+                }
+                "w" => {
+                    // Close active agent (like :w in vim... but we use it for close)
+                    app.close_active_agent();
+                }
+                _ => {
+                    // Unknown command - show notification
+                    if !cmd.is_empty() {
+                        app.add_notification(
+                            format!("Unknown command: {}", cmd),
+                            NotifyLevel::Warning,
+                        );
+                    }
+                }
+            }
+            app.command_buffer.clear();
+            app.input_mode = InputMode::Navigation;
+        }
+        KeyCode::Backspace => {
+            app.command_buffer.pop();
+            if app.command_buffer.is_empty() {
+                // Return to navigation if buffer is empty
+                app.input_mode = InputMode::Navigation;
+            }
+        }
+        KeyCode::Char(c) => {
+            app.command_buffer.push(c);
+        }
         _ => {}
     }
 }

@@ -32,6 +32,8 @@ pub enum InputMode {
     Navigation,
     /// Input mode - keys are sent to the focused agent
     Input,
+    /// Command mode - :q, :quit, etc.
+    Command,
 }
 
 /// Review state for a completed agent

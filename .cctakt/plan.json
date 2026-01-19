@@ -1,22 +1,22 @@
 {
   "version": 1,
   "created_at": 0,
-  "description": "テーマ選択メニューUI追加",
+  "description": "指揮者再起動機能の実装",
   "tasks": [
     {
-      "id": "worker-theme-menu",
+      "id": "feat-restart-conductor",
       "action": {
         "type": "create_worker",
-        "branch": "feat/theme-selector-menu",
-        "task_description": "## テーマ選択メニューUI追加\n\nキーバインドでテーマ選択メニューを表示し、リアルタイムでテーマを切り替えられる機能を実装してください。\n\n### 実装内容\n\n#### 1. テーマのランタイム切り替え対応 (`src/theme.rs`)\n\n現在は `OnceLock` で起動時のみ設定可能。`RwLock` に変更してランタイム切り替えを可能にする。\n\n#### 2. 利用可能なテーマ一覧を取得する関数追加 (`src/theme.rs`)\n\n```rust\npub fn available_themes() -> &'static [(&'static str, &'static str)] {\n    &[\n        (\"cyberpunk\", \"Cyberpunk - ネオンカラーのサイバーパンク風\"),\n        (\"monokai\", \"Monokai - クラシックなエディタカラー\"),\n        (\"dracula\", \"Dracula - 人気のダークテーマ\"),\n        (\"nord\", \"Nord - 北欧の青みのあるパレット\"),\n        (\"arctic\", \"Arctic Aurora - オーロラ風の幻想的なテーマ\"),\n        (\"minimal\", \"Minimal - 控えめでプロフェッショナル\")\n    ]\n}\n```\n\n#### 3. テーマ選択モーダルUI (`src/main.rs`)\n\n- 中央にポップアップ表示\n- 上下キーでテーマ選択\n- Enterで確定、Escでキャンセル\n- 選択中のテーマをハイライト表示\n- 現在のテーマにチェックマーク表示\n\n#### 4. キーバインド追加 (`src/main.rs`)\n\n- `Ctrl+T` でテーマ選択メニューを開く\n- `handle_keybinding()` に追加\n\n#### 5. 設定ファイルへの保存 (`src/config.rs`)\n\nテーマ変更時に `.cctakt.toml` を更新して永続化\n\n#### 6. App状態の追加\n\n`App` 構造体に以下を追加:\n- `show_theme_picker: bool`\n- `theme_picker_index: usize`\n\n### UI デザイン例\n\n```\n┌─────────────────────────────┐\n│      テーマを選択           │\n├─────────────────────────────┤\n│   Cyberpunk              ✓  │\n│ > Monokai                   │\n│   Dracula                   │\n│   Nord                      │\n│   Arctic Aurora             │\n│   Minimal                   │\n├─────────────────────────────┤\n│  Enter: 選択  Esc: キャンセル │\n└─────────────────────────────┘\n```\n\n### 注意事項\n\n- `theme()` の戻り値の型が変わるので、既存の呼び出し箇所も調整が必要\n- `ColorTheme` トレイトに `Send + Sync` が必要になる可能性あり\n- テーマ切り替え後は画面全体を再描画\n\n完了後は必ず `cargo build` で確認し、git add && git commit してください。",
+        "branch": "feat/restart-conductor",
+        "task_description": "指揮者（Conductor）を再起動する機能を実装する\n\n## 背景\n- 指揮者がハング状態になった場合や、設定を変更した後に再起動したい場合がある\n- 現状は指揮者を閉じるとアプリ全体が終了してしまう\n\n## 実装内容\n\n### 1. AgentManagerに再起動メソッド追加 (src/agent.rs)\n```rust\nimpl AgentManager {\n    /// 指揮者を再起動する\n    /// 既存の指揮者を停止し、新しい指揮者を起動\n    pub fn restart_interactive(&mut self, rows: u16, cols: u16) -> Result<()> {\n        // 既存の指揮者を検索して削除\n        if let Some(idx) = self.agents.iter().position(|a| a.mode == AgentMode::Interactive) {\n            self.agents.remove(idx);\n            // active_indexの調整\n        }\n        \n        // 新しい指揮者を作成\n        let working_dir = std::env::current_dir()?;\n        let agent = Agent::spawn(\n            self.next_id,\n            \"Orchestrator\".to_string(),\n            working_dir,\n            rows,\n            cols,\n        )?;\n        self.next_id += 1;\n        \n        // 先頭に挿入（指揮者は常に先頭）\n        self.agents.insert(0, agent);\n        self.active_index = 0;\n        Ok(())\n    }\n}\n```\n\n### 2. Appに再起動メソッド追加 (src/app/mod.rs)\n```rust\nimpl App {\n    pub fn restart_conductor(&mut self) -> Result<()> {\n        self.agent_manager.restart_interactive(self.content_rows, self.content_cols)\n    }\n}\n```\n\n### 3. キーバインド追加 (src/tui/input.rs)\n- `Ctrl+R`: 指揮者を再起動\n- Navigationモードでのみ有効\n- 確認なしで即座に再起動（ワーカーには影響しない）\n\n```rust\n// handle_global_input または handle_navigation_input 内\nKeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {\n    if let Err(e) = app.restart_conductor() {\n        app.show_notification(format!(\"指揮者再起動失敗: {}\", e), NotificationType::Error);\n    } else {\n        app.show_notification(\"指揮者を再起動しました\".to_string(), NotificationType::Success);\n    }\n    return true;\n}\n```\n\n### 4. ヘルプ表示更新\nフッターやヘルプ表示に`Ctrl+R: Restart Conductor`を追加\n\n## テスト\n- cargo build が成功すること\n- cargo test が成功すること\n- 実際にTUIを起動してCtrl+Rで指揮者が再起動されること\n\n完了後: git add -A && git commit -m \"feat: 指揮者を再起動する機能を追加 (Ctrl+R)\"",
         "base_branch": null
       },
       "status": "completed",
       "error": null,
-      "updated_at": 1768664882,
+      "updated_at": 1768706220,
       "result": {
         "commits": [
-          "a483fe1 feat: Add theme selector menu with Ctrl+T keybinding"
+          "b0036dd feat: 指揮者を再起動する機能を追加 (Ctrl+R)"
         ],
         "pr_number": null,
         "pr_url": null
