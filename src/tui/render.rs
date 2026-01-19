@@ -691,9 +691,14 @@ pub fn render_ended_agent(
         Some(color) => Style::default().fg(color),
         None => t.style_border_muted(),
     };
+    let ended_message = if let Some(ref branch) = agent.branch {
+        format!("  Agent '{}' session ended. ({})", agent.name, branch)
+    } else {
+        format!("  Agent '{}' session ended.", agent.name)
+    };
     let menu = Paragraph::new(vec![
         Line::from(""),
-        Line::from(format!("  Agent '{}' session ended.", agent.name)),
+        Line::from(ended_message),
         Line::from(""),
         Line::from(vec![
             Span::styled("  [Ctrl+W]", t.style_warning()),

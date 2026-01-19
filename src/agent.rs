@@ -72,6 +72,8 @@ pub struct Agent {
     pub work_state: WorkState,
     pub task_sent: bool,
     pub mode: AgentMode,
+    /// Branch name associated with this agent (for workers)
+    pub branch: Option<String>,
     /// Error message if failed (non-interactive only)
     pub error: Option<String>,
     /// Result text if completed (non-interactive only)
@@ -155,6 +157,7 @@ impl Agent {
             work_state: WorkState::Starting,
             task_sent: false,
             mode: AgentMode::Interactive,
+            branch: None,
             error: None,
             result: None,
             interactive: Some(InteractiveState {
@@ -176,6 +179,7 @@ impl Agent {
         working_dir: PathBuf,
         task_description: &str,
         max_turns: Option<u32>,
+        branch: Option<String>,
     ) -> Result<Self> {
         let parser = Arc::new(Mutex::new(StreamParser::new()));
         let output_buffer = Arc::new(Mutex::new(String::new()));
@@ -241,6 +245,7 @@ impl Agent {
             work_state: WorkState::Working,
             task_sent: true,
             mode: AgentMode::NonInteractive,
+            branch,
             error: None,
             result: None,
             interactive: None,
@@ -511,9 +516,10 @@ impl AgentManager {
         working_dir: PathBuf,
         task_description: &str,
         max_turns: Option<u32>,
+        branch: Option<String>,
     ) -> Result<usize> {
         let id = self.next_id;
-        let agent = Agent::spawn_non_interactive(id, name, working_dir, task_description, max_turns)?;
+        let agent = Agent::spawn_non_interactive(id, name, working_dir, task_description, max_turns, branch)?;
         self.agents.push(agent);
         self.next_id += 1;
         self.active_index = self.agents.len() - 1;
