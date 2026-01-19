@@ -1,34 +1,34 @@
 # cctakt
 
-複数の Claude Code エージェントを Git Worktree で並列管理する TUI オーケストレーター
+A TUI orchestrator for managing multiple Claude Code agents in parallel using Git Worktree
 
 ![cctakt screenshot](cctakt.png)
 
-cctakt は、複数の Claude Code エージェントを Git Worktree で管理し、並列でコーディングタスクを実行するための Rust 製 TUI アプリケーションです。
+cctakt is a Rust-based TUI application that manages multiple Claude Code agents via Git Worktree and executes coding tasks in parallel.
 
-## 特徴
+## Features
 
-- **並列実行**: Git Worktree を活用し、複数のタスクを同時並行で実行
-- **指揮者モード**: メインリポジトリで Claude Code を「指揮者」として起動し、plan.json を通じてワーカーを統括
-- **ワーカー管理**: 各ワーカーの PTY 出力をリアルタイムで確認・操作可能
-- **自動レビュー**: ワーカー完了時に diff を表示し、マージ判断をサポート
-- **GitHub Issues 連携**: Issue からワーカーを自動生成、ブランチ名を提案
-- **プラン機能**: `.cctakt/plan.json` を通じた構造化タスク管理
-- **テーマ**: 6種類のカラーテーマ（Cyberpunk, Monokai, Dracula, Nord, Arctic Aurora, Minimal）
+- **Parallel Execution**: Leverage Git Worktree to run multiple tasks simultaneously
+- **Conductor Mode**: Launch Claude Code as a "conductor" in the main repository to orchestrate workers via plan.json
+- **Worker Management**: Monitor and interact with each worker's PTY output in real-time
+- **Auto Review**: Display diffs when workers complete and support merge decisions
+- **GitHub Issues Integration**: Auto-generate workers from issues with suggested branch names
+- **Plan Feature**: Structured task management via `.cctakt/plan.json`
+- **Themes**: 6 color themes (Cyberpunk, Monokai, Dracula, Nord, Arctic Aurora, Minimal)
 
-## 必要条件
+## Requirements
 
 - Rust 2024 Edition
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) がインストールされていること
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed
 - Git
 
-## インストール
+## Installation
 
 ```bash
 cargo install cctakt
 ```
 
-### ソースからビルド
+### Building from Source
 
 ```bash
 git clone https://github.com/taiki3/cctakt.git
@@ -36,130 +36,130 @@ cd cctakt
 cargo install --path .
 ```
 
-## 使い方
+## Usage
 
-### クイックスタート
+### Quick Start
 
 ```bash
-cctakt init   # 初期設定
-cctakt        # TUI 起動
+cctakt init   # Initial setup
+cctakt        # Launch TUI
 ```
 
-### ワークフロー
+### Workflow
 
 ```mermaid
 sequenceDiagram
     actor User
-    participant Conductor as 指揮者
+    participant Conductor
     participant cctakt
-    participant Worker as ワーカー
+    participant Worker
 
-    User->>Conductor: タスクを依頼
+    User->>Conductor: Request task
     Conductor->>cctakt: add_task
-    cctakt->>Worker: Worktree作成・起動
-    Worker->>Worker: 実装・コミット
-    Worker-->>cctakt: 完了
-    cctakt->>User: レビュー画面
-    User->>cctakt: マージ承認
-    cctakt->>cctakt: mainにマージ
+    cctakt->>Worker: Create worktree & launch
+    Worker->>Worker: Implement & commit
+    Worker-->>cctakt: Complete
+    cctakt->>User: Review screen
+    User->>cctakt: Approve merge
+    cctakt->>cctakt: Merge to main
 ```
 
-### 1. 指揮者に指示を出す
+### 1. Give Instructions to the Conductor
 
-左ペインの指揮者 Claude Code に自然言語でタスクを依頼します：
+Give tasks to the conductor Claude Code in the left pane using natural language:
 
 ```
-認証機能を実装して。ログインとログアウトのAPIエンドポイントを作って。
+Implement authentication. Create login and logout API endpoints.
 ```
 
-指揮者は MCP ツール `add_task` を使ってワーカーを作成します。
+The conductor uses the MCP tool `add_task` to create workers.
 
-### 2. ワーカーが実装
+### 2. Workers Implement
 
-右ペインにワーカーが表示され、自動的に実装を開始します。
-- 専用の Git Worktree で作業（main を汚さない）
-- 完了すると自動でコミット
+Workers appear in the right pane and automatically start implementation.
+- Work in dedicated Git Worktree (keeps main clean)
+- Auto-commit on completion
 
-### 3. レビュー & マージ
+### 3. Review & Merge
 
-ワーカー完了後、diff を含むレビュー画面が表示されます：
-- `j/k` でスクロール
-- `Enter` または `m` でマージ承認
-- `q` でキャンセル
+After a worker completes, a review screen with diff is displayed:
+- `j/k` to scroll
+- `Enter` or `m` to approve merge
+- `q` to cancel
 
-マージ後は自動でビルドチェックが実行されます。
+A build check runs automatically after merge.
 
-## キーバインド
+## Key Bindings
 
-### グローバル
+### Global
 
-| キー | 説明 |
-|------|------|
-| `Ctrl+Q` | 終了 |
-| `Ctrl+T` | テーマピッカーを開く |
-| `Ctrl+I` / `F2` | Issue ピッカーを開く |
-| `Ctrl+W` | アクティブなエージェントを閉じる |
-| `Ctrl+N` | 次のタブへ |
-| `Ctrl+P` | 前のタブへ |
-| `Ctrl+1-9` / `Alt+1-9` | タブを番号で切り替え |
+| Key | Description |
+|-----|-------------|
+| `Ctrl+Q` | Quit |
+| `Ctrl+T` | Open theme picker |
+| `Ctrl+I` / `F2` | Open issue picker |
+| `Ctrl+W` | Close active agent |
+| `Ctrl+N` | Next tab |
+| `Ctrl+P` | Previous tab |
+| `Ctrl+1-9` / `Alt+1-9` | Switch tab by number |
 
-### ナビゲーションモード
+### Navigation Mode
 
-| キー | 説明 |
-|------|------|
-| `h` | 左ペインへ移動（指揮者） |
-| `l` | 右ペインへ移動（ワーカー） |
-| `j` | 次のワーカーへ（右ペイン時） |
-| `k` | 前のワーカーへ（右ペイン時） |
-| `i` / `Enter` | 入力モードへ切り替え |
+| Key | Description |
+|-----|-------------|
+| `h` | Move to left pane (conductor) |
+| `l` | Move to right pane (workers) |
+| `j` | Next worker (in right pane) |
+| `k` | Previous worker (in right pane) |
+| `i` / `Enter` | Switch to input mode |
 
-### 入力モード
+### Input Mode
 
-| キー | 説明 |
-|------|------|
-| `Esc` | ナビゲーションモードへ戻る |
-| 任意のキー | エージェントへ入力を送信 |
+| Key | Description |
+|-----|-------------|
+| `Esc` | Return to navigation mode |
+| Any key | Send input to agent |
 
-### レビューモード
+### Review Mode
 
-| キー | 説明 |
-|------|------|
-| `j` / `↓` | 下へスクロール |
-| `k` / `↑` | 上へスクロール |
-| `d` / `Ctrl+D` | 半ページ下へ |
-| `u` / `Ctrl+U` | 半ページ上へ |
-| `g` | 先頭へ |
-| `G` | 末尾へ |
-| `m` / `Enter` | マージを実行 |
-| `Esc` / `q` | レビューをキャンセル |
+| Key | Description |
+|-----|-------------|
+| `j` / `↓` | Scroll down |
+| `k` / `↑` | Scroll up |
+| `d` / `Ctrl+D` | Half page down |
+| `u` / `Ctrl+U` | Half page up |
+| `g` | Go to top |
+| `G` | Go to bottom |
+| `m` / `Enter` | Execute merge |
+| `Esc` / `q` | Cancel review |
 
-### テーマピッカー
+### Theme Picker
 
-| キー | 説明 |
-|------|------|
-| `j` / `↓` | 次のテーマへ |
-| `k` / `↑` | 前のテーマへ |
-| `Enter` | テーマを適用 |
-| `q` | キャンセル |
+| Key | Description |
+|-----|-------------|
+| `j` / `↓` | Next theme |
+| `k` / `↑` | Previous theme |
+| `Enter` | Apply theme |
+| `q` | Cancel |
 
-## 指揮者モードと plan.json
+## Conductor Mode and plan.json
 
-cctakt は「指揮者モード」をサポートしています。メインリポジトリで Claude Code を起動し、`.cctakt/plan.json` にプランを書き込むことで、cctakt がワーカーを自動的に生成・管理します。
+cctakt supports "Conductor Mode". Launch Claude Code in the main repository and write plans to `.cctakt/plan.json`, and cctakt will automatically generate and manage workers.
 
-### plan.json の構造
+### plan.json Structure
 
 ```json
 {
   "version": 1,
   "created_at": 1700000000,
-  "description": "タスクの説明",
+  "description": "Task description",
   "tasks": [
     {
       "id": "worker-1",
       "action": {
         "type": "create_worker",
         "branch": "feat/example",
-        "task_description": "実装内容の詳細",
+        "task_description": "Detailed implementation requirements",
         "base_branch": "main"
       },
       "status": "pending"
@@ -177,31 +177,31 @@ cctakt は「指揮者モード」をサポートしています。メインリ�
 }
 ```
 
-### サポートされるアクション
+### Supported Actions
 
-| タイプ | 説明 | 必須フィールド | オプション |
-|--------|------|---------------|-----------|
-| `create_worker` | Worktree を作成し、ワーカーエージェントを起動 | `branch`, `task_description` | `base_branch` |
-| `create_pr` | プルリクエストを作成 | `branch`, `title` | `body`, `base`, `draft` |
-| `merge_branch` | ブランチをマージ | `branch` | `target` |
-| `cleanup_worktree` | Worktree を削除 | `worktree` | - |
-| `run_command` | コマンドを実行 | `worktree`, `command` | - |
-| `notify` | 通知メッセージを表示 | `message` | `level` (info/warning/error/success) |
-| `request_review` | レビューモードを開始 | `branch` | `after_task` |
+| Type | Description | Required Fields | Optional |
+|------|-------------|-----------------|----------|
+| `create_worker` | Create worktree and launch worker agent | `branch`, `task_description` | `base_branch` |
+| `create_pr` | Create pull request | `branch`, `title` | `body`, `base`, `draft` |
+| `merge_branch` | Merge branch | `branch` | `target` |
+| `cleanup_worktree` | Delete worktree | `worktree` | - |
+| `run_command` | Execute command | `worktree`, `command` | - |
+| `notify` | Display notification message | `message` | `level` (info/warning/error/success) |
+| `request_review` | Start review mode | `branch` | `after_task` |
 
-### タスクステータス
+### Task Status
 
-| ステータス | 説明 |
-|-----------|------|
-| `pending` | 実行待ち |
-| `running` | 実行中 |
-| `completed` | 完了 |
-| `failed` | 失敗 |
-| `skipped` | スキップ |
+| Status | Description |
+|--------|-------------|
+| `pending` | Waiting to execute |
+| `running` | In progress |
+| `completed` | Completed |
+| `failed` | Failed |
+| `skipped` | Skipped |
 
-### タスク結果
+### Task Results
 
-タスク完了時には `result` フィールドが設定されます：
+A `result` field is set upon task completion:
 
 ```json
 {
@@ -213,13 +213,13 @@ cctakt は「指揮者モード」をサポートしています。メインリ�
 }
 ```
 
-## MCP サーバー連携
+## MCP Server Integration
 
-cctakt は [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) サーバーとしても動作し、指揮者 Claude Code が直接 `plan.json` を操作する代わりに、cctakt 経由でタスクを管理できます。これにより、ファイル競合やレースコンディションを回避できます。
+cctakt also operates as a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server, allowing the conductor Claude Code to manage tasks through cctakt instead of directly manipulating `plan.json`. This avoids file conflicts and race conditions.
 
-### セットアップ
+### Setup
 
-`cctakt init` を実行すると、`.claude/settings.json` に MCP サーバー設定が自動的に追加されます：
+Running `cctakt init` automatically adds MCP server configuration to `.claude/settings.json`:
 
 ```json
 {
@@ -232,72 +232,72 @@ cctakt は [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) サ�
 }
 ```
 
-### 利用可能なツール
+### Available Tools
 
-| ツール | 説明 |
-|--------|------|
-| `add_task` | 新しいワーカータスクを追加（プランがなければ自動作成） |
-| `list_tasks` | 現在のプラン内の全タスクを一覧表示 |
-| `get_task` | 特定タスクの詳細を取得 |
-| `get_plan_status` | プラン全体のステータス（タスク数、完了数など）を取得 |
+| Tool | Description |
+|------|-------------|
+| `add_task` | Add a new worker task (auto-creates plan if none exists) |
+| `list_tasks` | List all tasks in the current plan |
+| `get_task` | Get details of a specific task |
+| `get_plan_status` | Get overall plan status (task count, completion count, etc.) |
 
-### add_task パラメータ
+### add_task Parameters
 
-| パラメータ | 必須 | 説明 |
-|-----------|------|------|
-| `id` | ○ | ユニークなタスクID（例: `feat-login`, `fix-bug-123`） |
-| `branch` | ○ | Git ブランチ名（例: `feat/login`, `fix/bug-123`） |
-| `description` | ○ | ワーカーへの詳細なタスク説明 |
-| `plan_description` | - | プラン全体の説明（新規プラン作成時のみ使用） |
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `id` | Yes | Unique task ID (e.g., `feat-login`, `fix-bug-123`) |
+| `branch` | Yes | Git branch name (e.g., `feat/login`, `fix/bug-123`) |
+| `description` | Yes | Detailed task description for the worker |
+| `plan_description` | No | Plan description (used only when creating a new plan) |
 
-### 指揮者からの使用例
+### Usage from Conductor
 
-指揮者 Claude Code は MCP ツールを使って以下のようにタスクを追加できます：
+The conductor Claude Code can add tasks using MCP tools as follows:
 
 ```
-add_task を使用:
+Using add_task:
 - id: "impl-auth"
 - branch: "feat/auth"
-- description: "ログイン機能を実装してください。..."
+- description: "Implement login functionality..."
 ```
 
-タスクが追加されると、cctakt が自動的に検知してワーカーを起動します。
+Once a task is added, cctakt automatically detects it and launches the worker.
 
-## 設定ファイル
+## Configuration File
 
-プロジェクトルートに `.cctakt.toml` を配置して設定をカスタマイズできます。`cctakt init` コマンドでデフォルト設定ファイルを生成できます。
+Place `.cctakt.toml` in the project root to customize settings. The `cctakt init` command generates a default configuration file.
 
 ```toml
-# Worktree の保存先（デフォルト: .worktrees）
+# Worktree storage location (default: .worktrees)
 worktree_dir = ".worktrees"
 
-# ブランチ名のプレフィックス（デフォルト: cctakt）
+# Branch name prefix (default: cctakt)
 branch_prefix = "cctakt"
 
-# カラーテーマ: cyberpunk, monokai, dracula, nord, arctic, minimal
-# デフォルト: cyberpunk
+# Color theme: cyberpunk, monokai, dracula, nord, arctic, minimal
+# Default: cyberpunk
 theme = "cyberpunk"
 
 [github]
-# Issue を自動取得するか（デフォルト: false）
+# Auto-fetch issues (default: false)
 auto_fetch_issues = false
-# リポジトリ（owner/repo 形式）
+# Repository (owner/repo format)
 repository = "owner/repo"
-# フィルタするラベル
+# Filter labels
 labels = ["cctakt", "good first issue"]
 
 [anthropic]
-# Anthropic API キー（環境変数 ANTHROPIC_API_KEY でも設定可能）
+# Anthropic API key (can also be set via ANTHROPIC_API_KEY env var)
 # api_key = "sk-ant-..."
-# 使用するモデル（デフォルト: claude-sonnet-4-20250514）
+# Model to use (default: claude-sonnet-4-20250514)
 model = "claude-sonnet-4-20250514"
-# 最大トークン数（デフォルト: 1024）
+# Max tokens (default: 1024)
 max_tokens = 1024
-# PR 説明を自動生成するか（デフォルト: true）
+# Auto-generate PR description (default: true)
 auto_generate_pr_description = true
 
 [keybindings]
-# デフォルト値を記載
+# Default values shown
 new_agent = "ctrl+t"
 close_agent = "ctrl+w"
 next_tab = "tab"
@@ -305,45 +305,45 @@ prev_tab = "shift+tab"
 quit = "ctrl+q"
 ```
 
-すべての設定項目はオプションです。指定しない項目はデフォルト値が使用されます。
+All configuration options are optional. Default values are used for unspecified items.
 
 ## Tech Stack
 
-| カテゴリ | 技術 |
-|----------|------|
-| 言語 | Rust (Edition 2024) |
+| Category | Technology |
+|----------|------------|
+| Language | Rust (Edition 2024) |
 | TUI | [ratatui](https://github.com/ratatui-org/ratatui) 0.29 |
-| ターミナル | [portable-pty](https://github.com/wez/wezterm/tree/main/pty) + [vt100](https://crates.io/crates/vt100) |
+| Terminal | [portable-pty](https://github.com/wez/wezterm/tree/main/pty) + [vt100](https://crates.io/crates/vt100) |
 | CLI | [clap](https://github.com/clap-rs/clap) 4.x |
 | HTTP | [ureq](https://github.com/algesten/ureq) (GitHub API / Anthropic API) |
-| 設定 | [toml](https://crates.io/crates/toml) + [serde](https://serde.rs/) |
-| イベント | [crossterm](https://github.com/crossterm-rs/crossterm) |
+| Config | [toml](https://crates.io/crates/toml) + [serde](https://serde.rs/) |
+| Events | [crossterm](https://github.com/crossterm-rs/crossterm) |
 
-## アーキテクチャ
+## Architecture
 
 ```
 cctakt (TUI)
-├── 指揮者 Claude Code (メインリポジトリ)
-│   └── .cctakt/plan.json にプラン書き込み
+├── Conductor Claude Code (main repository)
+│   └── Writes plan to .cctakt/plan.json
 │
-└── Worker Claude Code (各 Worktree)
-    └── 実際のタスク実行
+└── Worker Claude Code (each worktree)
+    └── Executes actual tasks
 ```
 
-### モジュール構成
+### Module Structure
 
-| モジュール | 説明 |
-|-----------|------|
-| `src/plan.rs` | プラン管理（指揮者 ↔ cctakt 通信） |
-| `src/worktree.rs` | Git Worktree 管理 |
-| `src/agent.rs` | PTY エージェント管理 |
+| Module | Description |
+|--------|-------------|
+| `src/plan.rs` | Plan management (conductor ↔ cctakt communication) |
+| `src/worktree.rs` | Git Worktree management |
+| `src/agent.rs` | PTY agent management |
 | `src/github.rs` | GitHub API (Issues, PR) |
-| `src/anthropic.rs` | Anthropic API（PR 本文生成） |
-| `src/mcp.rs` | MCP サーバー（指揮者からのツール呼び出し） |
-| `src/theme.rs` | カラーテーマ定義 |
-| `src/config.rs` | 設定ファイル管理 |
-| `src/tui/` | TUI レンダリング・入力処理 |
+| `src/anthropic.rs` | Anthropic API (PR description generation) |
+| `src/mcp.rs` | MCP server (tool calls from conductor) |
+| `src/theme.rs` | Color theme definitions |
+| `src/config.rs` | Configuration file management |
+| `src/tui/` | TUI rendering & input handling |
 
-## ライセンス
+## License
 
 GPL-3.0
