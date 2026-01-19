@@ -1,4 +1,4 @@
-# cctakt (シーシー・タクト)
+# cctakt
 
 複数の Claude Code エージェントを Git Worktree で並列管理する TUI オーケストレーター
 
