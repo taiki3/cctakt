@@ -31,7 +31,7 @@ cargo install cctakt
 ### ソースからビルド
 
 ```bash
-git clone https://github.com/yoshinaka-digion/cctakt.git
+git clone https://github.com/taiki3/cctakt.git
 cd cctakt
 cargo install --path .
 ```

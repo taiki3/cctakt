@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2024"
 description = "TUI orchestrator for multiple Claude Code agents using Git Worktree"
 license = "GPL-3.0"
-repository = "https://github.com/yoshinaka-digion/cctakt"
-authors = ["yoshinaka-digion"]
+repository = "https://github.com/taiki3/cctakt"
+authors = ["taiki3"]
 keywords = ["claude", "tui", "worktree", "ai", "orchestrator"]
 categories = ["command-line-utilities", "development-tools"]
 readme = "README.md"
-exclude = ["ref/", ".worktrees/", ".cctakt/"]
+exclude = [".worktrees/", ".cctakt/"]
 
 [dependencies]
 anyhow = "1"
