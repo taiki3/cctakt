@@ -36,6 +36,16 @@ pub enum InputMode {
     Command,
 }
 
+/// Focus state for review split pane
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReviewFocus {
+    /// Upper pane (commit log/summary)
+    #[default]
+    Summary,
+    /// Lower pane (diff view)
+    Diff,
+}
+
 /// Review state for a completed agent
 pub struct ReviewState {
     /// Agent index being reviewed
@@ -54,6 +64,10 @@ pub struct ReviewState {
     pub deletions: usize,
     /// Potential conflicts
     pub conflicts: Vec<String>,
+    /// Current focus in review split pane
+    pub focus: ReviewFocus,
+    /// Scroll position for summary/commit log pane
+    pub summary_scroll: u16,
 }
 
 /// Merge task for the queue
@@ -159,6 +173,8 @@ mod tests {
             insertions: 100,
             deletions: 20,
             conflicts: vec!["src/main.rs".to_string()],
+            focus: ReviewFocus::default(),
+            summary_scroll: 0,
         };
 
         assert_eq!(state.agent_index, 0);
@@ -167,6 +183,7 @@ mod tests {
         assert_eq!(state.insertions, 100);
         assert_eq!(state.deletions, 20);
         assert_eq!(state.conflicts.len(), 1);
+        assert_eq!(state.focus, ReviewFocus::Summary);
     }
 
     #[test]
@@ -181,6 +198,8 @@ mod tests {
             insertions: 0,
             deletions: 0,
             conflicts: vec![],
+            focus: ReviewFocus::default(),
+            summary_scroll: 0,
         };
 
         assert!(state.conflicts.is_empty());
@@ -203,6 +222,8 @@ mod tests {
                 "file2.rs".to_string(),
                 "file3.rs".to_string(),
             ],
+            focus: ReviewFocus::Diff,
+            summary_scroll: 0,
         };
 
         assert_eq!(state.conflicts.len(), 3);

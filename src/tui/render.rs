@@ -1,7 +1,7 @@
 //! TUI rendering functions
 
 use crate::agent::{Agent, AgentMode, AgentStatus, WorkState};
-use crate::app::{App, AppMode, FocusedPane, InputMode};
+use crate::app::{App, AppMode, FocusedPane, InputMode, ReviewFocus};
 use cctakt::{available_themes, current_theme_id, issue_picker::centered_rect, theme};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -222,7 +222,7 @@ pub fn render_theme_picker(f: &mut Frame, app: &App, area: ratatui::layout::Rect
     f.render_widget(paragraph, popup_area);
 }
 
-/// Render review merge screen
+/// Render review merge screen with split panes (summary on top, diff on bottom)
 pub fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let Some(ref mut state) = app.review_state else {
         return;
@@ -233,91 +233,160 @@ pub fn render_review_merge(f: &mut Frame, app: &mut App, area: ratatui::layout::
     // Clear the area first
     f.render_widget(Clear, area);
 
-    // Layout: header + diff + footer
+    // Layout: summary (top) + diff (bottom) + footer
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(6), // Header with stats
-            Constraint::Min(10),   // Diff view
-            Constraint::Length(3), // Footer with help
+            Constraint::Percentage(35), // Summary pane (commit log/stats)
+            Constraint::Percentage(65), // Diff pane
+            Constraint::Length(1),      // Footer with help
         ])
         .split(area);
 
-    // Header with merge info
-    let mut header_lines = vec![
-        Line::from(vec![
-            Span::styled(
-                " Review Merge: ",
-                Style::default()
-                    .fg(t.neon_cyan())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(&state.branch, Style::default().fg(t.neon_yellow())),
-            Span::raw(" → "),
-            Span::styled("main", Style::default().fg(t.success())),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::raw(" Stats: "),
-            Span::styled(format!("{} files", state.files_changed), t.style_text()),
-            Span::raw(", "),
-            Span::styled(
-                format!("+{}", state.insertions),
-                Style::default().fg(t.success()),
-            ),
-            Span::raw(" / "),
-            Span::styled(
-                format!("-{}", state.deletions),
-                Style::default().fg(t.error()),
-            ),
-        ]),
-    ];
+    // Determine focus colors
+    let summary_focused = state.focus == ReviewFocus::Summary;
+    let diff_focused = state.focus == ReviewFocus::Diff;
+
+    let summary_border_color = if summary_focused {
+        t.neon_cyan()
+    } else {
+        t.border_secondary()
+    };
+    let diff_border_color = if diff_focused {
+        t.neon_cyan()
+    } else {
+        t.border_secondary()
+    };
+
+    // === Summary pane (top) ===
+    render_summary_pane(f, state, chunks[0], summary_border_color);
+
+    // === Diff pane (bottom) ===
+    let diff_block = Block::default()
+        .title(format!(" Diff: {} → main ", state.branch))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(diff_border_color));
+    state.diff_view.render_with_block(f, chunks[1], diff_block);
+
+    // Footer with help
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled("[i/Enter]", t.style_key()),
+        Span::styled(" Focus  ", t.style_text_muted()),
+        Span::styled("[j/k]", t.style_key()),
+        Span::styled(" Scroll  ", t.style_text_muted()),
+        Span::styled("[M]", t.style_success()),
+        Span::styled(" Merge  ", t.style_text_muted()),
+        Span::styled("[Q/C]", t.style_error()),
+        Span::styled(" Cancel", t.style_text_muted()),
+    ]));
+    f.render_widget(footer, chunks[2]);
+}
+
+/// Render the summary pane showing commit log and stats
+fn render_summary_pane(
+    f: &mut Frame,
+    state: &crate::app::types::ReviewState,
+    area: ratatui::layout::Rect,
+    border_color: Color,
+) {
+    let t = theme();
+
+    // Build summary lines
+    let mut lines: Vec<Line> = vec![];
+
+    // Title line
+    lines.push(Line::from(vec![
+        Span::styled(
+            " Review Merge: ",
+            Style::default()
+                .fg(t.neon_cyan())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(&state.branch, Style::default().fg(t.neon_yellow())),
+        Span::raw(" → "),
+        Span::styled("main", Style::default().fg(t.success())),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // Stats line
+    lines.push(Line::from(vec![
+        Span::raw(" Stats: "),
+        Span::styled(format!("{} files", state.files_changed), t.style_text()),
+        Span::raw(", "),
+        Span::styled(
+            format!("+{}", state.insertions),
+            Style::default().fg(t.success()),
+        ),
+        Span::raw(" / "),
+        Span::styled(
+            format!("-{}", state.deletions),
+            Style::default().fg(t.error()),
+        ),
+    ]));
 
     // Show conflicts warning if any
     if !state.conflicts.is_empty() {
-        header_lines.push(Line::from(vec![
+        lines.push(Line::from(vec![
             Span::styled(" ⚠ Potential conflicts: ", t.style_warning()),
             Span::styled(state.conflicts.join(", "), t.style_warning()),
         ]));
     }
 
-    // Show recent commits
-    if !state.commit_log.is_empty() {
-        header_lines.push(Line::from(""));
-        header_lines.push(Line::from(vec![
-            Span::styled(" Recent commits: ", Style::default().fg(t.neon_cyan())),
-            Span::styled(
-                state.commit_log.lines().next().unwrap_or(""),
+    lines.push(Line::from(""));
+
+    // Commit log header
+    lines.push(Line::from(vec![Span::styled(
+        " Commits:",
+        Style::default()
+            .fg(t.neon_cyan())
+            .add_modifier(Modifier::BOLD),
+    )]));
+
+    // Add commit log lines (scrollable)
+    let content_height = area.height.saturating_sub(2) as usize; // -2 for borders
+    let log_lines: Vec<&str> = state.commit_log.lines().collect();
+    let start = state.summary_scroll as usize;
+    let visible_log_lines = log_lines
+        .iter()
+        .skip(start)
+        .take(content_height.saturating_sub(lines.len()));
+
+    for log_line in visible_log_lines {
+        // Format commit lines with colors
+        let styled_line = if log_line.starts_with("  ") {
+            // Commit message (indented)
+            Line::from(Span::styled(
+                log_line.to_string(),
                 t.style_text_secondary(),
-            ),
-        ]));
+            ))
+        } else if log_line.contains(' ') {
+            // Commit hash and title
+            let parts: Vec<&str> = log_line.splitn(2, ' ').collect();
+            if parts.len() == 2 {
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {} ", parts[0]),
+                        Style::default().fg(t.neon_yellow()),
+                    ),
+                    Span::styled(parts[1].to_string(), t.style_text()),
+                ])
+            } else {
+                Line::from(Span::styled(format!(" {log_line}"), t.style_text()))
+            }
+        } else {
+            Line::from(Span::styled(format!(" {log_line}"), t.style_text()))
+        };
+        lines.push(styled_line);
     }
 
-    let header = Paragraph::new(header_lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(t.style_border()),
-    );
-    f.render_widget(header, chunks[0]);
+    let summary_block = Block::default()
+        .title(" Summary ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
 
-    // Diff view
-    state.diff_view.render(f, chunks[1]);
-
-    // Footer with help
-    let footer = Paragraph::new(vec![Line::from(vec![
-        Span::styled(" [Enter/M]", t.style_success()),
-        Span::raw(" Merge  "),
-        Span::styled("[Esc/C]", t.style_error()),
-        Span::raw(" Cancel  "),
-        Span::styled("[↑/↓/PgUp/PgDn]", t.style_key()),
-        Span::raw(" Scroll"),
-    ])])
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(t.style_border_muted()),
-    );
-    f.render_widget(footer, chunks[2]);
+    let summary_widget = Paragraph::new(lines).block(summary_block);
+    f.render_widget(summary_widget, area);
 }
 
 /// Render header with tabs
