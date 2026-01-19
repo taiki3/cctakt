@@ -38,25 +38,56 @@ cargo install --path .
 
 ## 使い方
 
+### クイックスタート
+
 ```bash
-# TUI を起動（引数なし）
-cctakt
-
-# プロジェクトを初期化（.cctakt.toml を生成）
-cctakt init
-
-# 環境設定を確認
-cctakt status
-
-# GitHub Issues を一覧表示
-cctakt issues
-
-# GitHub Issues をラベルでフィルタ
-cctakt issues --labels "bug,enhancement"
-
-# プランを実行（CLI モード、TUI なし）
-cctakt run .cctakt/plan.json
+cctakt init   # 初期設定
+cctakt        # TUI 起動
 ```
+
+### ワークフロー
+
+```mermaid
+sequenceDiagram
+    participant User as ユーザー
+    participant Conductor as 指揮者 (左ペイン)
+    participant cctakt as cctakt
+    participant Worker as ワーカー (右ペイン)
+
+    User->>Conductor: タスクを依頼
+    Conductor->>cctakt: add_task (MCP)
+    cctakt->>Worker: Worktree作成 & 起動
+    Worker->>Worker: 実装 & コミット
+    Worker-->>cctakt: 完了通知
+    cctakt->>User: レビュー画面表示
+    User->>cctakt: Enter でマージ承認
+    cctakt->>cctakt: main にマージ
+```
+
+### 1. 指揮者に指示を出す
+
+左ペインの指揮者 Claude Code に自然言語でタスクを依頼します：
+
+```
+認証機能を実装して。ログインとログアウトのAPIエンドポイントを作って。
+```
+
+指揮者は MCP ツール `add_task` を使ってワーカーを作成します。
+
+### 2. ワーカーが実装
+
+右ペインにワーカーが表示され、自動的に実装を開始します。
+- 専用の Git Worktree で作業（main を汚さない）
+- 完了すると自動でコミット
+
+### 3. レビュー & マージ
+
+ワーカー完了後、diff を含むレビュー画面が表示されます：
+- `j/k` でスクロール
+- `Enter` または `m` でマージ承認
+- `q` でキャンセル
+
+マージ後は自動でビルドチェックが実行されます。
 
 ## キーバインド
 
